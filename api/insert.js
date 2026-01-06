@@ -33,14 +33,16 @@ module.exports = async (req, res) => {
     const client = await pool.connect();
 
     // Menggunakan teknik Unnest untuk kirim banyak data sekaligus dalam 1 query
-    const query = `
-      INSERT INTO picklist (
-        picklist_number, date_picklist, customer, customer_name, 
-        product_id, location_id, pick_qty, sto_number
-      ) 
-      SELECT * FROM UNNEST ($1::text[], $2::date[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::text[])
-      ON CONFLICT (picklist_number, product_id, location_id, sto_number) DO NOTHING
-    `;
+// Cuplikan perubahan pada query di Vercel api/insert.js
+const query = `
+  INSERT INTO picklist (
+    sort_order, picklist_number, date_picklist, customer, 
+    customer_name, product_id, location_id, pick_qty, sto_number
+  ) 
+  SELECT * FROM UNNEST ($1::int[], $2::text[], $3::date[], $4::text[], $5::text[], $6::text[], $7::text[], $8::int[], $9::text[])
+  ON CONFLICT (picklist_number, product_id, location_id, sto_number) 
+  DO UPDATE SET sort_order = EXCLUDED.sort_order;
+`;
 
     // Siapkan array untuk masing-masing kolom
     const cols = {
