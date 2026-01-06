@@ -33,7 +33,6 @@ module.exports = async (req, res) => {
     const client = await pool.connect();
 
     // Menggunakan teknik Unnest untuk kirim banyak data sekaligus dalam 1 query
-// Cuplikan perubahan pada query di Vercel api/insert.js
 const query = `
   INSERT INTO picklist (
     sort_order, picklist_number, date_picklist, customer, 
