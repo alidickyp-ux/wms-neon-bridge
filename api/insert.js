@@ -17,9 +17,9 @@ if (req.method === 'GET') {
         client = await pool.connect();
         // Query mengambil nomor picklist yang belum dipicking (status 'open')
         const result = await client.query(
-            "SELECT DISTINCT picklist_number FROM picklist_final WHERE status = 'open' ORDER BY picklist_no ASC"
+            "SELECT DISTINCT picklist_number FROM picklist_final WHERE status = 'open' ORDER BY picklist_number ASC"
         );
-        const listNo = result.rows.map(row => row.picklist_no);
+        const listNo = result.rows.map(row => row.picklist_number);
         return res.status(200).json(listNo);
     } catch (err) {
         return res.status(500).json({ status: 'error', message: err.message });
@@ -35,7 +35,7 @@ if (req.method === 'GET') {
       client = await pool.connect();
 
       const query = `
-        INSERT INTO picklist_raw (
+        INSERT INTO picklist_final (
           picklist_number, tanggal_picking, customer, nama_customer, 
           product_id, location_id, qty_pick, qty_real, sto_number, 
           zona, level_val, row_val, subrow, rak_raw, lantai_level
