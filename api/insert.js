@@ -11,21 +11,22 @@ module.exports = async (req, res) => {
   let client;
 
   // --- LOGIKA GET (UNTUK ANDROID: AMBIL LIST PICKLIST) ---
-  if (req.method === 'GET') {
+  // Bagian GET di insert.js (Ganti query-nya agar sesuai kebutuhan Picking)
+if (req.method === 'GET') {
     try {
-      client = await pool.connect();
-      const result = await client.query(
-        "SELECT DISTINCT picklist_no FROM picklist_final WHERE status = 'open' ORDER BY picklist_no ASC"
-      );
-      // Kirim array string: ["PL001", "PL002"]
-      const listNo = result.rows.map(row => row.picklist_no);
-      return res.status(200).json(listNo);
+        client = await pool.connect();
+        // Query mengambil nomor picklist yang belum dipicking (status 'open')
+        const result = await client.query(
+            "SELECT DISTINCT picklist_no FROM picklist_final WHERE status = 'open' ORDER BY picklist_no ASC"
+        );
+        const listNo = result.rows.map(row => row.picklist_no);
+        return res.status(200).json(listNo);
     } catch (err) {
-      return res.status(500).json({ status: 'error', message: err.message });
+        return res.status(500).json({ status: 'error', message: err.message });
     } finally {
-      if (client) client.release();
+        if (client) client.release();
     }
-  }
+}
 
   // --- LOGIKA POST (UNTUK UPLOAD DATA RAW SEPERTI KEMARIN) ---
   if (req.method === 'POST') {
