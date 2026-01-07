@@ -17,7 +17,7 @@ if (req.method === 'GET') {
         client = await pool.connect();
         // Query mengambil nomor picklist yang belum dipicking (status 'open')
         const result = await client.query(
-            "SELECT DISTINCT picklist_no FROM picklist_final WHERE status = 'open' ORDER BY picklist_no ASC"
+            "SELECT DISTINCT picklist_number FROM picklist_final WHERE status = 'open' ORDER BY picklist_no ASC"
         );
         const listNo = result.rows.map(row => row.picklist_no);
         return res.status(200).json(listNo);
