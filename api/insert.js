@@ -70,7 +70,7 @@ module.exports = async (req, res) => {
             else if (body.data && Array.isArray(body.data)) {
             const { data } = body;
             const query = `
-            INSERT INTO picklist_final (
+            INSERT INTO picklist_raw (
             picklist_number, tanggal_picking, customer, nama_customer, 
             product_id, location_id, qty_pick, qty_real, sto_number, 
             zona, level_val, row_val, subrow, rak_raw, lantai_level, status
