@@ -19,9 +19,9 @@ module.exports = async (req, res) => {
         picklist_number, 
         nama_customer, 
         SUM(qty_pick) as total_qty, 
-        status_pick
+        status
       FROM picklist_raw 
-      WHERE status_pick IN ('open', 'partial picked')
+      WHERE status IN ('open', 'partial picked')
       GROUP BY picklist_number, nama_customer, status_pick
       ORDER BY picklist_number DESC
     `;
