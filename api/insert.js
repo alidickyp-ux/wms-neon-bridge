@@ -37,6 +37,8 @@ module.exports = async (req, res) => {
         }
     }
 
+    // ... (bagian atas tetap sama)
+
     // --- LOGIKA POST: Sinkronisasi GSheet & Update Picking Android ---
     if (req.method === 'POST') {
         try {
@@ -45,23 +47,23 @@ module.exports = async (req, res) => {
 
             // 1. UPDATE DARI ANDROID (Simpan Transaksi Picking)
             if (body.action === 'update_qty') {
-                const { picklist_number, product_id, location_id, sto_number, qty_actual, picker_name } = body;
+                const { picklist_number, product_id, location_id, qty_actual, picker_name } = body;
 
                 await client.query('BEGIN');
                 
-                // Masuk ke tabel transaksi (Log Detail)
+                // PERBAIKAN: Jumlah kolom (5) harus sama dengan jumlah VALUES ($1-$5) + NOW() adalah kolom ke-6
                 await client.query(
                     `INSERT INTO picking_transactions 
                     (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at) 
-                    VALUES ($1, $2, $3, $4, $5 NOW())`,
+                    VALUES ($1, $2, $3, $4, $5, NOW())`, 
                     [picklist_number, product_id, location_id, qty_actual, picker_name]
                 );
 
-                // Note: Status di picklist_raw akan otomatis update via TRIGGER DATABASE (After Insert)
-                
                 await client.query('COMMIT');
                 return res.status(200).json({ status: 'success', message: 'Transaksi Berhasil Dicatat!' });
             } 
+            
+// ... (sisanya tetap sama) 
             
             // 2. UPLOAD DATA BARU / SINKRONISASI DARI GSHEET (Bulk Upsert)
             else if (body.data && Array.isArray(body.data)) {
