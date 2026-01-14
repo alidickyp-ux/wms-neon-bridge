@@ -31,11 +31,10 @@ module.exports = async (req, res) => {
         FROM picklist_raw 
         WHERE picklist_number = $1
         ORDER BY 
-          lantai_level ASC,
           zona ASC,
           row_val ASC,
-          subrow ASC,
           level_val ASC,
+          subrow ASC,
           rak_raw ASC 
       `;
       const result = await client.query(queryDetail, [picklist_number]);
