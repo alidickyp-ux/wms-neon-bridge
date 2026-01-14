@@ -20,29 +20,33 @@ module.exports = async (req, res) => {
 
   let client;
 
+// ... kode pool tetap sama ...
+
   try {
-    // Mengambil parameter opsional 'picklist_number' jika ingin memfilter
     const { picklist_number } = req.query;
-    
     client = await pool.connect();
 
-    let query = `SELECT * FROM task_list_operator`;
+    // PERBAIKAN: Ganti nama tabel menjadi picklist_raw
+    // Tambahkan filter status = 'open' agar hanya yang belum diproses yang muncul
+    let query = `SELECT no_picklist as picklist_number, customer_name, total_qty, status_pick as status 
+                 FROM picklist_raw 
+                 WHERE status_pick = 'open'`;
     let values = [];
 
-    // Jika operator ingin melihat picklist spesifik saja
     if (picklist_number) {
-      query += ` WHERE picklist_number = $1`;
+      query += ` AND no_picklist = $1`;
       values.push(picklist_number);
     }
 
     const result = await client.query(query, values);
 
-    // Berikan respons data
     return res.status(200).json({
       status: 'success',
       total_items: result.rowCount,
       data: result.rows
     });
+    
+// ... sisanya tetap sama ...
 
   } catch (err) {
     console.error("Database Error:", err.message);
