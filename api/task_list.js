@@ -15,24 +15,53 @@ module.exports = async (req, res) => {
   let client;
   try {
     client = await pool.connect();
-    // Query menggunakan kolom 'status' sesuai info terbaru
-    const query = `
-      SELECT 
-        picklist_number, 
-        nama_customer, 
-        SUM(qty_pick) as total_qty, 
-        status
-      FROM picklist_raw 
-      WHERE status IN ('open', 'partial picked')
-      GROUP BY picklist_number, nama_customer, status
-      ORDER BY picklist_number DESC
-    `;
+    
+    // Ambil parameter picklist_number dari URL (jika ada)
+    const { picklist_number } = req.query;
 
-    const result = await client.query(query);
-    return res.status(200).json({
-      status: 'success',
-      data: result.rows
-    });
+    if (picklist_number) {
+      /** * LOGIKA DETAIL: 
+       * Muncul saat kartu diklik. Menampilkan Location, Product ID, dan Qty.
+       */
+      const queryDetail = `
+        SELECT 
+          location_id, 
+          product_id, 
+          qty_pick as qty,
+          status
+        FROM picklist_raw 
+        WHERE picklist_number = $1
+        ORDER BY location_id ASC
+      `;
+      const result = await client.query(queryDetail, [picklist_number]);
+      
+      return res.status(200).json({
+        status: 'success',
+        data: result.rows
+      });
+
+    } else {
+      /** * LOGIKA LIST UTAMA: 
+       * Muncul di halaman depan (Halaman Pink).
+       */
+      const queryList = `
+        SELECT 
+          picklist_number, 
+          nama_customer, 
+          SUM(qty_pick) as total_qty, 
+          status
+        FROM picklist_raw 
+        WHERE status IN ('open', 'partial picked')
+        GROUP BY picklist_number, nama_customer, status
+        ORDER BY picklist_number DESC
+      `;
+      const result = await client.query(queryList);
+      
+      return res.status(200).json({
+        status: 'success',
+        data: result.rows
+      });
+    }
 
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.message });
