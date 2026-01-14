@@ -52,9 +52,9 @@ module.exports = async (req, res) => {
                 // Masuk ke tabel transaksi (Log Detail)
                 await client.query(
                     `INSERT INTO picking_transactions 
-                    (picklist_number, product_id, location_id, sto_number, qty_actual, picker_name, scanned_at) 
-                    VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-                    [picklist_number, product_id, location_id, sto_number, qty_actual, picker_name]
+                    (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at) 
+                    VALUES ($1, $2, $3, $4, $5 NOW())`,
+                    [picklist_number, product_id, location_id, qty_actual, picker_name]
                 );
 
                 // Note: Status di picklist_raw akan otomatis update via TRIGGER DATABASE (After Insert)
