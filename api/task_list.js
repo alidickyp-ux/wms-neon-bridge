@@ -33,8 +33,8 @@ module.exports = async (req, res) => {
         ORDER BY 
           lantai_level ASC,
           zona ASC,
-          level_val ASC,
           row_val ASC,
+          level_val ASC,
           subrow ASC,
           rak_raw ASC 
       `;
