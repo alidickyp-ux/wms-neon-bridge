@@ -6,7 +6,6 @@ const pool = new Pool({
 });
 
 module.exports = async (req, res) => {
-  // Hanya izinkan metode POST
   if (req.method !== 'POST') {
     return res.status(405).json({ message: 'Method not allowed' });
   }
@@ -20,11 +19,14 @@ module.exports = async (req, res) => {
     description 
   } = req.body;
 
+  // Log data yang masuk untuk debugging di Vercel Log
+  console.log("Data diterima:", req.body);
+
   let client;
   try {
     client = await pool.connect();
     
-    // Query untuk insert data ke picking_transactions
+    // Pastikan nama kolom sesuai dengan header di database Neon Anda
     const query = `
       INSERT INTO picking_transactions (
         picklist_number, 
@@ -38,18 +40,30 @@ module.exports = async (req, res) => {
       RETURNING id;
     `;
 
-    const values = [picklist_number, product_id, location_id, qty_actual, picker_name, description];
+    const values = [
+      picklist_number || 'NA', 
+      product_id, 
+      location_id, 
+      parseInt(qty_actual) || 0, 
+      picker_name || 'Android_User', 
+      description || ''
+    ];
+
     const result = await client.query(query, values);
+    console.log("Insert Berhasil, ID:", result.rows[0].id);
 
     return res.status(201).json({
       status: 'success',
-      message: 'Data picking berhasil disimpan',
-      transaction_id: result.rows[0].id
+      message: 'Data berhasil masuk ke Neon',
+      id: result.rows[0].id
     });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ status: 'error', message: err.message });
+    console.error("Database Error:", err.message);
+    return res.status(500).json({ 
+      status: 'error', 
+      message: "Gagal ke database: " + err.message 
+    });
   } finally {
     if (client) client.release();
   }
