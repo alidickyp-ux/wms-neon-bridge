@@ -2,16 +2,21 @@ const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 module.exports = async (req, res) => {
-    if (req.method !== 'POST') return res.status(405).end();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).json({ message: 'Method not allowed' });
 
     const { username, password } = req.body;
     let client;
 
     try {
         client = await pool.connect();
-        // Cari user berdasarkan username dan password
+        // Mencocokkan dengan tabel operators Anda
         const result = await client.query(
-            "SELECT id, username, nama FROM users WHERE username = $1 AND password = $2",
+            "SELECT id, username, full_name FROM operators WHERE username = $1 AND password = $2",
             [username, password]
         );
 
