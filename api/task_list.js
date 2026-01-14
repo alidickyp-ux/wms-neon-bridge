@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -14,6 +15,7 @@ module.exports = async (req, res) => {
   let client;
   try {
     client = await pool.connect();
+    // Query menggunakan kolom 'status' sesuai info terbaru
     const query = `
       SELECT 
         picklist_number, 
@@ -22,7 +24,7 @@ module.exports = async (req, res) => {
         status
       FROM picklist_raw 
       WHERE status IN ('open', 'partial picked')
-      GROUP BY picklist_number, nama_customer, status_pick
+      GROUP BY picklist_number, nama_customer, status
       ORDER BY picklist_number DESC
     `;
 
