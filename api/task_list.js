@@ -36,7 +36,6 @@ module.exports = async (req, res) => {
           row_val ASC,
           level_val ASC,
           subrow ASC, 
-          product_id ASC
       `;
       const result = await client.query(queryDetail, [picklist_number]);
       
