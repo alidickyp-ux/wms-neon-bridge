@@ -16,12 +16,11 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
     
-    // Ambil parameter picklist_number dari URL (jika ada)
     const { picklist_number } = req.query;
 
     if (picklist_number) {
-      /** * LOGIKA DETAIL: 
-       * Muncul saat kartu diklik. Menampilkan Location, Product ID, dan Qty.
+      /** * LOGIKA DETAIL DENGAN OPTIMASI RUTE PICKING
+       * Mengurutkan berdasarkan Lantai, Zonasi, Row, Subrow, dan Rak
        */
       const queryDetail = `
         SELECT 
@@ -31,7 +30,13 @@ module.exports = async (req, res) => {
           status
         FROM picklist_raw 
         WHERE picklist_number = $1
-        ORDER BY location_id ASC
+        ORDER BY 
+          lantai_level ASC,
+          zona ASC, 
+          row_val ASC, 
+          subrow ASC, 
+          rak_raw ASC,
+          product_id ASC
       `;
       const result = await client.query(queryDetail, [picklist_number]);
       
@@ -41,8 +46,7 @@ module.exports = async (req, res) => {
       });
 
     } else {
-      /** * LOGIKA LIST UTAMA: 
-       * Muncul di halaman depan (Halaman Pink).
+      /** * LOGIKA LIST UTAMA
        */
       const queryList = `
         SELECT 
