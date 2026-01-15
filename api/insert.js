@@ -66,9 +66,13 @@ module.exports = async (req, res) => {
 
                 await client.query('COMMIT');
 
-                // REFRESH MATERIALIZED VIEW secara Concurrently (Tidak mengunci tabel)
-                // Ini yang membuat onResume di Android terasa instan dan data akurat
-                await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list');
+                /**
+                 * OPTIMASI KECEPATAN:
+                 * Menghapus 'await' agar Android tidak menunggu proses refresh yang berat (1-2 detik).
+                 * Proses refresh tetap berjalan di server, tapi Android langsung dapat balasan sukses.
+                 */
+                pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list')
+                    .catch(err => console.error("Background Refresh Error:", err));
 
                 return res.status(200).json({ status: 'success', message: 'Transaksi Berhasil!' });
             } 
@@ -100,8 +104,9 @@ module.exports = async (req, res) => {
 
                 await client.query(query, cols);
 
-                // Refresh MV setelah sinkronisasi massal
-                await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list');
+                // Refresh MV di background setelah sinkronisasi massal
+                pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list')
+                    .catch(err => console.error("Background Refresh Sync Error:", err));
 
                 return res.status(200).json({ status: 'success', message: 'Sync GSheet Berhasil!' });
             }
