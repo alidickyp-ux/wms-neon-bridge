@@ -9,26 +9,26 @@ module.exports = async (req, res) => {
 
     let client;
 
-    // --- LOGIKA GET: Ambil List (OPEN) atau Detail (Berdasarkan Picklist) ---
+    // --- LOGIKA GET: Ambil List (DARI MV) atau Detail ---
     if (req.method === 'GET') {
         try {
             client = await pool.connect();
             const { picklist_number } = req.query;
 
             if (picklist_number) {
-                // Ambil detail barang untuk Android
+                // Ambil detail barang - Diurutkan berdasarkan rute picking agar operator efisien
                 const result = await client.query(
-                    "SELECT product_id, location_id, qty_pick, nama_customer, status FROM picklist_raw WHERE picklist_number = $1",
+                    `SELECT product_id, location_id, qty_pick, nama_customer, status 
+                     FROM picklist_raw 
+                     WHERE picklist_number = $1 
+                     ORDER BY zona ASC, row_val ASC, level_val ASC, subrow ASC, rak_raw ASC`,
                     [picklist_number]
                 );
-                return res.status(200).json(result.rows);
+                return res.status(200).json({ status: 'success', data: result.rows });
             } else {
-                // Ambil daftar nomor picklist yang masih memiliki item 'open' atau 'partial picked'
-                const result = await client.query(
-                    "SELECT DISTINCT picklist_number FROM picklist_raw WHERE status IN ('open', 'partial picked') ORDER BY picklist_number ASC"
-                );
-                const listNo = result.rows.map(row => row.picklist_number);
-                return res.status(200).json(listNo);
+                // Ambil daftar dari MATERIALIZED VIEW (Sangat Cepat untuk Handheld)
+                const result = await client.query("SELECT * FROM mv_picking_list");
+                return res.status(200).json({ status: 'success', data: result.rows });
             }
         } catch (err) {
             return res.status(500).json({ status: 'error', message: err.message });
@@ -37,21 +37,19 @@ module.exports = async (req, res) => {
         }
     }
 
-    // ... (bagian atas tetap sama)
-
-    // --- LOGIKA POST: Sinkronisasi GSheet & Update Picking Android ---
+    // --- LOGIKA POST: Update dari Android & Sync GSheet ---
     if (req.method === 'POST') {
         try {
             const body = req.body;
             client = await pool.connect();
 
-            // 1. UPDATE DARI ANDROID (Simpan Transaksi Picking)
+            // 1. UPDATE DARI ANDROID (Simpan Transaksi)
             if (body.action === 'update_qty') {
                 const { picklist_number, product_id, location_id, qty_actual, picker_name } = body;
 
                 await client.query('BEGIN');
                 
-                // PERBAIKAN: Jumlah kolom (5) harus sama dengan jumlah VALUES ($1-$5) + NOW() adalah kolom ke-6
+                // Catat di tabel transaksi
                 await client.query(
                     `INSERT INTO picking_transactions 
                     (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at) 
@@ -59,13 +57,23 @@ module.exports = async (req, res) => {
                     [picklist_number, product_id, location_id, qty_actual, picker_name]
                 );
 
+                // Update status di tabel raw agar menjadi 'fully picked'
+                await client.query(
+                    `UPDATE picklist_raw SET status = 'fully picked' 
+                     WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
+                    [picklist_number, product_id, location_id]
+                );
+
                 await client.query('COMMIT');
-                return res.status(200).json({ status: 'success', message: 'Transaksi Berhasil Dicatat!' });
+
+                // REFRESH MATERIALIZED VIEW secara Concurrently (Tidak mengunci tabel)
+                // Ini yang membuat onResume di Android terasa instan dan data akurat
+                await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list');
+
+                return res.status(200).json({ status: 'success', message: 'Transaksi Berhasil!' });
             } 
             
-// ... (sisanya tetap sama) 
-            
-            // 2. UPLOAD DATA BARU / SINKRONISASI DARI GSHEET (Bulk Upsert)
+            // 2. UPLOAD DATA BARU DARI GSHEET
             else if (body.data && Array.isArray(body.data)) {
                 const { data } = body;
                 const query = `
@@ -74,19 +82,11 @@ module.exports = async (req, res) => {
                         product_id, location_id, qty_pick, qty_real, sto_number, 
                         zona, level_val, row_val, subrow, rak_raw, lantai_level, status
                     ) 
-                    SELECT 
-                        p_num, t_pick, cust, c_name, p_id, l_id, qty, qty_r, sto, 
-                        zona, lvl, row_val, sub, rak, lantai, 'open' 
-                    FROM UNNEST (
-                        $1::text[], $2::date[], $3::text[], $4::text[], $5::text[], 
-                        $6::text[], $7::int[], $8::int[], $9::text[], $10::text[], 
-                        $11::text[], $12::text[], $13::text[], $14::text[], $15::text[]
-                    ) AS t(p_num, t_pick, cust, c_name, p_id, l_id, qty, qty_r, sto, zona, lvl, row_val, sub, rak, lantai)
+                    SELECT p_num, t_pick, cust, c_name, p_id, l_id, qty, qty_r, sto, zona, lvl, row_val, sub, rak, lantai, 'open' 
+                    FROM UNNEST ($1::text[], $2::date[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::int[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[]) 
+                    AS t(p_num, t_pick, cust, c_name, p_id, l_id, qty, qty_r, sto, zona, lvl, row_val, sub, rak, lantai)
                     ON CONFLICT (picklist_number, product_id, location_id, sto_number) 
-                    DO UPDATE SET 
-                        qty_pick = EXCLUDED.qty_pick,
-                        -- PROTEKSI STATUS: Jangan timpa status jika sudah diproses (Partial/Fully)
-                        status = picklist_raw.status; 
+                    DO UPDATE SET qty_pick = EXCLUDED.qty_pick, status = picklist_raw.status;
                 `;
 
                 const cols = Array.from({ length: 15 }, () => []);
@@ -99,9 +99,11 @@ module.exports = async (req, res) => {
                 });
 
                 await client.query(query, cols);
-                return res.status(200).json({ status: 'success', message: 'Sinkronisasi GSheet Berhasil!' });
-            } else {
-                return res.status(400).json({ status: 'error', message: 'Format data tidak dikenal' });
+
+                // Refresh MV setelah sinkronisasi massal
+                await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list');
+
+                return res.status(200).json({ status: 'success', message: 'Sync GSheet Berhasil!' });
             }
 
         } catch (err) {
