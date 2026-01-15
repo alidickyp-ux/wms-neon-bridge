@@ -22,24 +22,27 @@ module.exports = async (req, res) => {
       /** * LOGIKA DETAIL: GROUPING BERDASARKAN LOKASI
        * Menghimpun beberapa SKU dalam satu lokasi agar picker tidak bingung
        */
-      const queryDetail = `
+const queryDetail = `
         SELECT 
-          location_id, 
-          string_agg(product_id || ' : ' || qty_pick || ' pcs', chr(10)) as sku_summary,
+          pr.location_id, 
+          -- Summary juga kita update agar ada deskripsinya jika perlu
+          string_agg(pr.product_id || ' (' || COALESCE(mp.description, 'No Desc') || ') : ' || pr.qty_pick || ' pcs', chr(10)) as sku_summary,
           json_agg(json_build_object(
-            'product_id', product_id, 
-            'qty_pick', qty_pick,
-            'status', status
+            'product_id', pr.product_id, 
+            'description', mp.description, -- AMBIL DARI MASTER_PRODUCT
+            'qty_pick', pr.qty_pick,
+            'status', pr.status
           )) as items_json
-        FROM picklist_raw 
-        WHERE picklist_number = $1 AND status != 'fully picked'
-        GROUP BY location_id, zona, row_val, subrow, level_val, rak_raw
+        FROM picklist_raw pr
+        LEFT JOIN master_product mp ON pr.product_id = mp.product_id -- JOIN KE MASTER
+        WHERE pr.picklist_number = $1 AND pr.status != 'fully picked'
+        GROUP BY pr.location_id, pr.zona, pr.row_val, pr.subrow, pr.level_val, pr.rak_raw
         ORDER BY 
-          zona ASC, 
-          row_val ASC, 
-          subrow ASC, 
-          level_val ASC, 
-          rak_raw ASC
+          pr.zona ASC, 
+          pr.row_val ASC, 
+          pr.subrow ASC, 
+          pr.level_val ASC, 
+          pr.rak_raw ASC
       `;
       const result = await client.query(queryDetail, [picklist_number]);
       
