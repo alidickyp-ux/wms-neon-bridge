@@ -33,8 +33,8 @@ module.exports = async (req, res) => {
         ORDER BY 
           zona ASC,
           row_val ASC,
-          level_val ASC,
           subrow ASC,
+          level_val ASC,
           rak_raw ASC 
       `;
       const result = await client.query(queryDetail, [picklist_number]);
@@ -44,20 +44,11 @@ module.exports = async (req, res) => {
         data: result.rows
       });
 
+// ... kode atas tetap sama ...
     } else {
-      /** * LOGIKA LIST UTAMA
+      /** * LOGIKA LIST UTAMA - Menggunakan Materialized View
        */
-      const queryList = `
-        SELECT 
-          picklist_number, 
-          nama_customer, 
-          SUM(qty_pick) as total_qty, 
-          status
-        FROM picklist_raw 
-        WHERE status IN ('open', 'partial picked')
-        GROUP BY picklist_number, nama_customer, status
-        ORDER BY picklist_number DESC
-      `;
+      const queryList = `SELECT * FROM mv_picking_list`;
       const result = await client.query(queryList);
       
       return res.status(200).json({
@@ -65,6 +56,7 @@ module.exports = async (req, res) => {
         data: result.rows
       });
     }
+// ... kode bawah tetap sama ...
 
   } catch (err) {
     return res.status(500).json({ status: 'error', message: err.message });
