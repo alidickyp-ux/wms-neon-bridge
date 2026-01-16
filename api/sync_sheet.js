@@ -8,14 +8,15 @@ module.exports = async (req, res) => {
 
     if (req.method === 'OPTIONS') return res.status(200).end();
     
-    const { data, is_last } = req.body; // Terima flag is_last dari GSheet
-    if (!data || !Array.isArray(data)) return res.status(400).json({ error: "Data format invalid" });
+    const { data, is_last } = req.body;
+    if (!data || !Array.isArray(data)) return res.status(400).json({ error: "No data" });
 
     let client;
     try {
         client = await pool.connect();
-        await client.query('BEGIN');
-
+        
+        // Gunakan kueri tunggal yang lebih cepat daripada loop satu-satu di dalam transaksi jika memungkinkan, 
+        // tapi untuk kestabilan kita tetap pakai loop sederhana dulu.
         const query = `
             INSERT INTO picklist_raw (
                 picklist_number, tanggal_picking, customer, nama_customer, 
@@ -34,19 +35,15 @@ module.exports = async (req, res) => {
             ]);
         }
 
-        await client.query('COMMIT');
-        
-        // HANYA REFRESH JIKA INI BATCH TERAKHIR
         if (is_last) {
-            console.log("Batch terakhir terdeteksi. Merefresh Materialized View...");
+            // Refresh MV secara async agar tidak menahan response
             pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list').catch(e => console.error(e));
         }
 
-        return res.status(200).json({ status: 'success', message: `${data.length} baris diproses.` });
+        return res.status(200).json({ status: 'success' });
 
     } catch (err) {
-        if (client) await client.query('ROLLBACK');
-        return res.status(500).json({ status: 'error', message: err.message });
+        return res.status(500).json({ error: err.message });
     } finally {
         if (client) client.release();
     }
