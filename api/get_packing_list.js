@@ -8,13 +8,13 @@ module.exports = async (req, res) => {
 
     // Query untuk mengambil PCB dengan status Partial atau Fully Picked
     // Kita gunakan DISTINCT agar nomor PCB tidak duplikat di daftar
-    const query = `
+const query = `
       SELECT 
         picklist_number, 
         nama_customer, 
         status AS status_picklist,
         COUNT(product_id)::int AS total_sku,
-        COALESCE(SUM(qty_actual), 0)::int AS total_pcs_picked
+        CAST(COALESCE(SUM(qty_actual), 0) AS INTEGER) AS total_pcs_picked
       FROM picklist_raw 
       WHERE LOWER(status) IN ('partial picked', 'fully picked')
       GROUP BY picklist_number, nama_customer, status
