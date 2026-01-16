@@ -19,23 +19,26 @@ module.exports = async (req, res) => {
     const { picklist_number } = req.query;
 
     if (picklist_number) {
-      /** * LOGIKA DETAIL: GROUPING BERDASARKAN LOKASI
-       * Menghimpun beberapa SKU dalam satu lokasi agar picker tidak bingung
+      /** * LOGIKA DETAIL: DENGAN PERHITUNGAN SISA QTY (PARTIAL)
        */
-const queryDetail = `
+      const queryDetail = `
         SELECT 
           pr.location_id, 
-          -- Summary juga kita update agar ada deskripsinya jika perlu
-          string_agg(pr.product_id || ' (' || COALESCE(mp.description, 'No Desc') || ') : ' || pr.qty_pick || ' pcs', chr(10)) as sku_summary,
+          -- Summary menampilkan sisa yang harus diambil
+          string_agg(pr.product_id || ' (' || COALESCE(mp.description, 'No Desc') || ') : ' || (pr.qty_pick - pr.qty_actual) || ' pcs', chr(10)) as sku_summary,
           json_agg(json_build_object(
             'product_id', pr.product_id, 
-            'description', mp.description, -- AMBIL DARI MASTER_PRODUCT
-            'qty_pick', pr.qty_pick,
+            'description', mp.description,
+            'qty_pick', pr.qty_pick,    -- Request awal
+            'qty_actual', pr.qty_actual, -- Yang sudah discan sebelumnya
+            'sisa_qty', (pr.qty_pick - pr.qty_actual), -- Kalkulasi sisa untuk Android
             'status', pr.status
           )) as items_json
         FROM picklist_raw pr
-        LEFT JOIN master_product mp ON pr.product_id = mp.product_id -- JOIN KE MASTER
-        WHERE pr.picklist_number = $1 AND pr.status != 'fully picked'
+        LEFT JOIN master_product mp ON pr.product_id = mp.product_id 
+        WHERE pr.picklist_number = $1 
+          AND pr.status != 'fully picked' 
+          AND (pr.qty_pick - pr.qty_actual) > 0 -- Hanya tampilkan jika masih ada sisa
         GROUP BY pr.location_id, pr.zona, pr.row_val, pr.subrow, pr.level_val, pr.rak_raw
         ORDER BY 
           pr.zona ASC, 
@@ -52,8 +55,7 @@ const queryDetail = `
       });
 
     } else {
-      /** * LOGIKA LIST UTAMA - Menggunakan Materialized View (Cepat)
-       */
+      // LOGIKA LIST UTAMA
       const queryList = `SELECT * FROM mv_picking_list`;
       const result = await client.query(queryList);
       
