@@ -8,18 +8,18 @@ module.exports = async (req, res) => {
 
     // Query untuk mengambil PCB dengan status Partial atau Fully Picked
     // Kita gunakan DISTINCT agar nomor PCB tidak duplikat di daftar
-    const query = `
-      SELECT 
-        picklist_number, 
-        nama_customer, 
-        status,
-        COUNT(product_id) as total_sku,
-        SUM(qty_actual) as total_pcs_picked
-      FROM picklist_raw 
-      WHERE status IN ('partial picked', 'fully picked')
-      GROUP BY picklist_number, nama_customer, status
-      ORDER BY picklist_number DESC
-    `;
+const query = `
+  SELECT 
+    picklist_number, 
+    nama_customer, 
+    status AS status_picklist, 
+    COUNT(product_id)::int AS total_sku,
+    SUM(qty_actual)::int AS total_pcs_picked
+  FROM picklist_raw 
+  WHERE status IN ('partial picked', 'fully picked')
+  GROUP BY picklist_number, nama_customer, status
+  ORDER BY picklist_number DESC
+`;
 
     const result = await client.query(query);
 
