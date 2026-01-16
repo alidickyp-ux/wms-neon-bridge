@@ -13,7 +13,6 @@ module.exports = async (req, res) => {
     packer_name 
   } = req.body;
 
-  // Validasi input dasar
   if (!picklist_number || !product_id || !qty_packed || !container_number) {
     return res.status(400).json({ error: "Missing required fields" });
   }
@@ -22,12 +21,24 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
-    // 1. GENERATE HUID (Contoh: HUID-PCB23-1712345678)
-    const timestamp = Date.now();
-    const huid = `HUID-${picklist_number}-${timestamp}`;
+    // --- LOGIKA HUID BARU ---
+    // 1. Ambil 5 angka terakhir dari Picklist Number
+    const pcbSuffix = picklist_number.slice(-5);
 
-    // 2. INSERT ke packing_transactions
-    // Status diset 'open' karena masih masuk ke "Laci Packing"
+    // 2. Ambil Tanggal format DDMMYY
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = String(now.getFullYear()).slice(-2);
+    const dateStr = `${day}${month}${year}`;
+
+    // 3. Generate Random String (3 Karakter)
+    const randomStr = Math.random().toString(36).substring(2, 5).toUpperCase();
+
+    // GABUNGKAN: 00123 + 160126 + ABC
+    const huid = `${pcbSuffix}${dateStr}${randomStr}`;
+    // -----------------------
+
     const query = `
       INSERT INTO packing_transactions (
         picklist_number, 
@@ -55,6 +66,7 @@ module.exports = async (req, res) => {
     return res.status(200).json({
       status: 'success',
       message: "Data masuk ke Laci Packing",
+      huid_generated: huid,
       data: result.rows[0]
     });
 
