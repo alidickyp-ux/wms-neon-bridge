@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
         COUNT(product_id) as total_sku,
         SUM(qty_real) as total_pcs_picked
       FROM picklist_raw 
-      WHERE status_picklist IN ('PARTIAL PICKED', 'FULLY PICKED')
+      WHERE status IN ('PARTIAL PICKED', 'FULLY PICKED')
       GROUP BY picklist_number, nama_customer, status_picklist
       ORDER BY picklist_number DESC
     `;
