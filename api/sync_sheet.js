@@ -12,11 +12,8 @@ module.exports = async (req, res) => {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // PARSE BODY AMAN (WAJIB UNTUK GAS)
   let body = req.body;
-  if (typeof body === "string") {
-    body = JSON.parse(body);
-  }
+  if (typeof body === "string") body = JSON.parse(body);
 
   const { data, is_last } = body || {};
   if (!Array.isArray(data) || data.length === 0) {
@@ -25,36 +22,18 @@ module.exports = async (req, res) => {
 
   const client = await pool.connect();
   try {
-    const sql = `
-      INSERT INTO picklist_raw (
-        picklist_number,
-        tanggal_picking,
-        customer,
-        nama_customer,
-        product_id,
-        location_id,
-        qty_pick,
-        qty_real,
-        sto_number,
-        zona,
-        level_val,
-        row_val,
-        subrow,
-        rak_raw,
-        lantai_level,
-        status
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,$10,$11,$12,$13,$14,'open')
-      ON CONFLICT (
-        picklist_number,
-        product_id,
-        location_id,
-        qty_pick
-      ) DO NOTHING;
-    `;
+    const values = [];
+    const placeholders = [];
 
-    for (const r of data) {
-      await client.query(sql, [
+    data.forEach((r, i) => {
+      const b = i * 14;
+      placeholders.push(
+        `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},
+          $${b+7},0,$${b+8},$${b+9},$${b+10},$${b+11},
+          $${b+12},$${b+13},$${b+14},'open')`
+      );
+
+      values.push(
         r.p_num,
         r.t_pick,
         r.cust,
@@ -69,21 +48,42 @@ module.exports = async (req, res) => {
         r.sub,
         r.rak,
         r.lantai
-      ]);
-    }
+      );
+    });
+
+    const sql = `
+      INSERT INTO picklist_raw (
+        picklist_number, tanggal_picking, customer, nama_customer,
+        product_id, location_id, qty_pick, qty_real, sto_number,
+        zona, level_val, row_val, subrow, rak_raw, lantai_level, status
+      )
+      VALUES ${placeholders.join(",")}
+      ON CONFLICT (picklist_number, product_id, location_id)
+      DO UPDATE SET
+        qty_pick = EXCLUDED.qty_pick,
+        tanggal_picking = EXCLUDED.tanggal_picking,
+        customer = EXCLUDED.customer,
+        nama_customer = EXCLUDED.nama_customer,
+        sto_number = EXCLUDED.sto_number,
+        zona = EXCLUDED.zona,
+        level_val = EXCLUDED.level_val,
+        row_val = EXCLUDED.row_val,
+        subrow = EXCLUDED.subrow,
+        rak_raw = EXCLUDED.rak_raw,
+        lantai_level = EXCLUDED.lantai_level;
+    `;
+
+    await client.query(sql, values);
 
     if (is_last) {
-      pool
-        .query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list")
-        .catch(console.error);
+      pool.query(
+        "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list"
+      ).catch(console.error);
     }
 
-    res.status(200).json({
-      status: "success",
-      rows: data.length
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(200).json({ status: "success", rows: data.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   } finally {
     client.release();
   }
