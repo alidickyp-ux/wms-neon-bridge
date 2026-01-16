@@ -19,16 +19,30 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-    // POST: Update menjadi CLOSED
+    // POST: Update menjadi CLOSED dengan Final Reason
     if (req.method === 'POST') {
-      const { id, inventory_note } = req.body;
-      await client.query(
-        "UPDATE picking_compliance SET status_akhir = 'CLOSED', keterangan = keterangan || $1, updated_at = NOW() WHERE id = $2",
-        [` | CLOSED Note: ${inventory_note}`, id]
-      );
-      return res.status(200).json({ status: 'success' });
+      // id dan final_reason dikirim dari Android
+      const { id, final_reason } = req.body;
+
+      if (!id || !final_reason) {
+        return res.status(400).json({ status: 'error', message: 'ID dan Final Reason wajib diisi' });
+      }
+
+      const queryUpdate = `
+        UPDATE picking_compliance 
+        SET 
+          status_akhir = 'CLOSED', 
+          final_reason = $1, 
+          updated_at = NOW() 
+        WHERE id = $2
+      `;
+
+      await client.query(queryUpdate, [final_reason, id]);
+      
+      return res.status(200).json({ status: 'success', message: 'Item Resolved' });
     }
   } catch (err) {
+    console.error(err);
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
