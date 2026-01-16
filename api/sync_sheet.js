@@ -20,6 +20,10 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: "No data" });
   }
 
+  if (data.length > 50) {
+    return res.status(400).json({ error: "Batch terlalu besar" });
+  }
+
   const client = await pool.connect();
   try {
     const values = [];
@@ -34,20 +38,10 @@ module.exports = async (req, res) => {
       );
 
       values.push(
-        r.p_num,
-        r.t_pick,
-        r.cust,
-        r.c_name,
-        r.p_id,
-        r.l_id,
-        r.qty,
-        r.sto,
-        r.zona,
-        r.lvl,
-        r.row_v,
-        r.sub,
-        r.rak,
-        r.lantai
+        r.p_num, r.t_pick, r.cust, r.c_name,
+        r.p_id, r.l_id, r.qty,
+        r.sto, r.zona, r.lvl,
+        r.row_v, r.sub, r.rak, r.lantai
       );
     });
 
@@ -61,24 +55,14 @@ module.exports = async (req, res) => {
       ON CONFLICT (picklist_number, product_id, location_id)
       DO UPDATE SET
         qty_pick = EXCLUDED.qty_pick,
-        tanggal_picking = EXCLUDED.tanggal_picking,
-        customer = EXCLUDED.customer,
-        nama_customer = EXCLUDED.nama_customer,
-        sto_number = EXCLUDED.sto_number,
-        zona = EXCLUDED.zona,
-        level_val = EXCLUDED.level_val,
-        row_val = EXCLUDED.row_val,
-        subrow = EXCLUDED.subrow,
-        rak_raw = EXCLUDED.rak_raw,
-        lantai_level = EXCLUDED.lantai_level;
+        tanggal_picking = EXCLUDED.tanggal_picking;
     `;
 
     await client.query(sql, values);
 
     if (is_last) {
-      pool.query(
-        "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list"
-      ).catch(console.error);
+      pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_picking_list")
+        .catch(console.error);
     }
 
     res.status(200).json({ status: "success", rows: data.length });
