@@ -61,16 +61,23 @@ module.exports = async (req, res) => {
       }
     }
 
-    if (req.method === 'POST') {
+if (req.method === 'POST') {
       if (action === 'save_item') {
-        const { picklist_number, product_id, qty_packed, container_number, container_type, packer_name } = req.body;
+        // 1. Ambil scanned_by dari req.body (Sesuai kiriman Android)
+        const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
+        
         const huid = `${picklist_number}-${Date.now()}`;
+
+        // 2. Ganti packer_name menjadi scanned_by di Query INSERT
         await client.query(`
-          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, packer_name)
+          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, packer_name]);
+        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
+
         return res.status(200).json({ status: 'success', message: 'Item saved' });
       }
+      
+      // ... sisanya
 
       if (action === 'close_box') {
         // Implementasi simpan berat jika tabel sudah ada, jika belum hanya sukses
