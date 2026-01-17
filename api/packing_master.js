@@ -33,15 +33,16 @@ module.exports = async (req, res) => {
             CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
             CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            -- AMBIL DETAIL ITEM UNTUK DESKRIPSI DI ANDROID
+            -- JOIN KE master_product UNTUK AMBIL NAMA_ITEM
             JSON_AGG(
               JSON_BUILD_OBJECT(
                 'product_id', p.product_id, 
-                'nama_item', p.nama_item, 
+                'nama_item', COALESCE(mp.nama_item, p.product_id), 
                 'qty_pick', p.qty_actual
               )
             ) as items
           FROM picklist_raw p 
+          LEFT JOIN master_product mp ON p.product_id = mp.product_id
           WHERE p.picklist_number = $1
           GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
@@ -58,11 +59,11 @@ module.exports = async (req, res) => {
       }
 
       if (action === 'get_laci') {
-        // JOIN DENGAN picklist_raw UNTUK DAPAT NAMA ITEM DI LACI
+        // JOIN DENGAN master_product UNTUK DAPAT NAMA ITEM DI LIST LACI
         const list = await client.query(`
-          SELECT pt.huid, pt.product_id, pt.qty_packed, pr.nama_item 
+          SELECT pt.huid, pt.product_id, pt.qty_packed, COALESCE(mp.nama_item, pt.product_id) as nama_item 
           FROM packing_transactions pt
-          LEFT JOIN picklist_raw pr ON pt.product_id = pr.product_id AND pt.picklist_number = pr.picklist_number
+          LEFT JOIN master_product mp ON pt.product_id = mp.product_id
           WHERE pt.picklist_number = $1 AND pt.container_number = $2
         `, [pcb, container]);
         
@@ -80,8 +81,6 @@ module.exports = async (req, res) => {
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
-        // --- LOGIKA HUID KONSISTEN PER BOX ---
-        // Cek apakah box ini sudah punya HUID sebelumnya
         const checkExistingHuid = await client.query(
             "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
             [picklist_number, container_number]
@@ -89,9 +88,8 @@ module.exports = async (req, res) => {
 
         let huid;
         if (checkExistingHuid.rows.length > 0) {
-            huid = checkExistingHuid.rows[0].huid; // Pakai HUID yang sudah ada
+            huid = checkExistingHuid.rows[0].huid; 
         } else {
-            // Jika box benar-benar baru, generate HUID baru
             const pcbSuffix = picklist_number.slice(-5);
             const now = new Date();
             const year = now.getFullYear().toString().slice(-2);
@@ -105,8 +103,8 @@ module.exports = async (req, res) => {
         await client.query(`
           INSERT INTO packing_transactions 
           (huid, picklist_number, product_id, qty_packed, container_number, box_number, container_type, scanned_by, status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, [huid, picklist_number, product_id, qty_packed, container_number, container_number, container_type, scanned_by, 'Packing']);
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
+        `, [huid, picklist_number, product_id, qty_packed, container_number, container_number, container_type, scanned_by]);
 
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
