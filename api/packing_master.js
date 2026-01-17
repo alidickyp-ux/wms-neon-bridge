@@ -25,14 +25,24 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
-      // --- UPDATE POINT 4: REQ ADALAH TOTAL PCS (SUM), BUKAN COUNT ---
       if (action === 'get_info') {
         const result = await client.query(`
-          SELECT p.picklist_number, p.nama_customer, 
-          CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
-          CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
-          (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack
-          FROM picklist_raw p WHERE p.picklist_number = $1
+          SELECT 
+            p.picklist_number, 
+            p.nama_customer, 
+            CAST(SUM(p.qty_req) AS INTEGER) AS total_qty_req, 
+            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
+            (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
+            -- AMBIL DETAIL ITEM UNTUK DESKRIPSI DI ANDROID
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                'product_id', p.product_id, 
+                'nama_item', p.nama_item, 
+                'qty_pick', p.qty_actual
+              )
+            ) as items
+          FROM picklist_raw p 
+          WHERE p.picklist_number = $1
           GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
         return res.status(200).json({ status: 'success', data: result.rows[0] });
@@ -48,8 +58,16 @@ module.exports = async (req, res) => {
       }
 
       if (action === 'get_laci') {
-        const list = await client.query("SELECT huid, product_id, qty_packed FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2", [pcb, container]);
+        // JOIN DENGAN picklist_raw UNTUK DAPAT NAMA ITEM DI LACI
+        const list = await client.query(`
+          SELECT pt.huid, pt.product_id, pt.qty_packed, pr.nama_item 
+          FROM packing_transactions pt
+          LEFT JOIN picklist_raw pr ON pt.product_id = pr.product_id AND pt.picklist_number = pr.picklist_number
+          WHERE pt.picklist_number = $1 AND pt.container_number = $2
+        `, [pcb, container]);
+        
         const total = await client.query("SELECT SUM(qty_packed)::int as total FROM packing_transactions WHERE container_number = $1", [container]);
+        
         return res.status(200).json({ 
           status: 'success', 
           container_info: { container_number: container, total_pcs: total.rows[0].total || 0 },
@@ -62,16 +80,27 @@ module.exports = async (req, res) => {
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
-        // --- UPDATE POINT 2: LOGIKA HUID BARU ---
-        const pcbSuffix = picklist_number.slice(-5);
-        const now = new Date();
-        const year = now.getFullYear().toString().slice(-2);
-        const day = now.getDate().toString().padStart(2, '0');
-        const month = (now.getMonth() + 1).toString().padStart(2, '0');
-        const datePart = `${year}${day}${month}`; // yyddmm
-        const randomPart = Math.floor(1000 + Math.random() * 9000); 
-        
-        const huid = `${pcbSuffix}${datePart}${randomPart}`;
+        // --- LOGIKA HUID KONSISTEN PER BOX ---
+        // Cek apakah box ini sudah punya HUID sebelumnya
+        const checkExistingHuid = await client.query(
+            "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
+            [picklist_number, container_number]
+        );
+
+        let huid;
+        if (checkExistingHuid.rows.length > 0) {
+            huid = checkExistingHuid.rows[0].huid; // Pakai HUID yang sudah ada
+        } else {
+            // Jika box benar-benar baru, generate HUID baru
+            const pcbSuffix = picklist_number.slice(-5);
+            const now = new Date();
+            const year = now.getFullYear().toString().slice(-2);
+            const day = now.getDate().toString().padStart(2, '0');
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const datePart = `${year}${day}${month}`;
+            const randomPart = Math.floor(1000 + Math.random() * 9000); 
+            huid = `${pcbSuffix}${datePart}${randomPart}`;
+        }
 
         await client.query(`
           INSERT INTO packing_transactions 
