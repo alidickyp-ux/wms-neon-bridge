@@ -11,7 +11,10 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
+    // --- METHOD GET ---
     if (req.method === 'GET') {
+      
+      // 1. List PCB untuk halaman utama
       if (action === 'get_list') {
         const result = await client.query(`
           SELECT picklist_number, nama_customer, status AS status_picklist,
@@ -25,19 +28,19 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
+      // 2. Info Header & Master Item (JOIN ke master_product)
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT 
             p.picklist_number, 
             p.nama_customer, 
-            CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
+            CAST(SUM(p.qty_req) AS INTEGER) AS total_qty_req, 
             CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            -- JOIN KE master_product UNTUK AMBIL NAMA_ITEM
             JSON_AGG(
               JSON_BUILD_OBJECT(
                 'product_id', p.product_id, 
-                'nama_item', COALESCE(mp.nama_item, p.product_id), 
+                'nama_item', COALESCE(mp.description, p.product_id), 
                 'qty_pick', p.qty_actual
               )
             ) as items
@@ -49,6 +52,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows[0] });
       }
 
+      // 3. Ambil nomor wadah berikutnya
       if (action === 'get_next_container') {
         const result = await client.query(`
           SELECT COUNT(DISTINCT container_number) + 1 AS next_num 
@@ -58,16 +62,20 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', next_container_number: `${type}-${nextNum}` });
       }
 
+      // 4. List barang di dalam laci/wadah
       if (action === 'get_laci') {
-        // JOIN DENGAN master_product UNTUK DAPAT NAMA ITEM DI LIST LACI
         const list = await client.query(`
-          SELECT pt.huid, pt.product_id, pt.qty_packed, COALESCE(mp.nama_item, pt.product_id) as nama_item 
+          SELECT pt.huid, pt.product_id, pt.qty_packed, COALESCE(mp.description, pt.product_id) as nama_item 
           FROM packing_transactions pt
           LEFT JOIN master_product mp ON pt.product_id = mp.product_id
           WHERE pt.picklist_number = $1 AND pt.container_number = $2
         `, [pcb, container]);
         
-        const total = await client.query("SELECT SUM(qty_packed)::int as total FROM packing_transactions WHERE container_number = $1", [container]);
+        const total = await client.query(`
+          SELECT SUM(qty_packed)::int as total 
+          FROM packing_transactions 
+          WHERE container_number = $1 AND picklist_number = $2
+        `, [container, pcb]);
         
         return res.status(200).json({ 
           status: 'success', 
@@ -77,18 +85,22 @@ module.exports = async (req, res) => {
       }
     }
 
+    // --- METHOD POST ---
     if (req.method === 'POST') {
+      
+      // 1. Simpan item discan ke database
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
-        const checkExistingHuid = await client.query(
+        // Logika HUID konsisten: Cari apakah box ini sudah punya HUID
+        const checkHuid = await client.query(
             "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
             [picklist_number, container_number]
         );
 
         let huid;
-        if (checkExistingHuid.rows.length > 0) {
-            huid = checkExistingHuid.rows[0].huid; 
+        if (checkHuid.rows.length > 0) {
+            huid = checkHuid.rows[0].huid; 
         } else {
             const pcbSuffix = picklist_number.slice(-5);
             const now = new Date();
@@ -109,6 +121,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
 
+      // 2. Tutup box dan input berat
       if (action === 'close_box') {
         const { pcb, container, weight_kg } = req.body;
         await client.query(`
@@ -119,7 +132,9 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', message: 'Box Closed' });
       }
     }
+
   } catch (err) {
+    console.error(err);
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
