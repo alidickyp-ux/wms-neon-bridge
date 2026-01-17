@@ -11,10 +11,8 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
-    // --- METHOD GET ---
     if (req.method === 'GET') {
       
-      // 1. List PCB untuk halaman utama
       if (action === 'get_list') {
         const result = await client.query(`
           SELECT picklist_number, nama_customer, status AS status_picklist,
@@ -28,7 +26,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
-      // 2. Info Header & Master Item (JOIN ke master_product)
+      // --- PERBAIKAN LOGIC GET INFO (MENGGUNAKAN SUM DAN KOLOM TETAP) ---
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT 
@@ -40,8 +38,17 @@ module.exports = async (req, res) => {
             JSON_AGG(
               JSON_BUILD_OBJECT(
                 'product_id', p.product_id, 
-                'nama_item', COALESCE(mp.description, p.product_id), 
-                'qty_pick', p.qty_actual
+                'nama_item', COALESCE(mp.description, p.product_id), -- Tetap nama_item untuk Android, ambil dari description Neon
+                'qty_pick', (
+                   SELECT CAST(SUM(qty_actual) AS INTEGER) 
+                   FROM picklist_raw 
+                   WHERE picklist_number = p.picklist_number AND product_id = p.product_id
+                ),
+                'qty_packed_total', (
+                   SELECT COALESCE(SUM(qty_packed), 0)::int 
+                   FROM packing_transactions 
+                   WHERE picklist_number = p.picklist_number AND product_id = p.product_id
+                )
               )
             ) as items
           FROM picklist_raw p 
@@ -49,10 +56,20 @@ module.exports = async (req, res) => {
           WHERE p.picklist_number = $1
           GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
+
+        // Membersihkan duplikasi SKU akibat JSON_AGG
+        if (result.rows[0] && result.rows[0].items) {
+            const seen = new Set();
+            result.rows[0].items = result.rows[0].items.filter(el => {
+                const duplicate = seen.has(el.product_id);
+                seen.add(el.product_id);
+                return !duplicate;
+            });
+        }
+
         return res.status(200).json({ status: 'success', data: result.rows[0] });
       }
 
-      // 3. Ambil nomor wadah berikutnya
       if (action === 'get_next_container') {
         const result = await client.query(`
           SELECT COUNT(DISTINCT container_number) + 1 AS next_num 
@@ -62,7 +79,6 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', next_container_number: `${type}-${nextNum}` });
       }
 
-      // 4. List barang di dalam laci/wadah
       if (action === 'get_laci') {
         const list = await client.query(`
           SELECT pt.huid, pt.product_id, pt.qty_packed, COALESCE(mp.description, pt.product_id) as nama_item 
@@ -85,14 +101,10 @@ module.exports = async (req, res) => {
       }
     }
 
-    // --- METHOD POST ---
     if (req.method === 'POST') {
-      
-      // 1. Simpan item discan ke database
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
-        // Logika HUID konsisten: Cari apakah box ini sudah punya HUID
         const checkHuid = await client.query(
             "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
             [picklist_number, container_number]
@@ -121,7 +133,6 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
 
-      // 2. Tutup box dan input berat
       if (action === 'close_box') {
         const { pcb, container, weight_kg } = req.body;
         await client.query(`
