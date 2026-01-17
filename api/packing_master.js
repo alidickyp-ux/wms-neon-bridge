@@ -29,7 +29,7 @@ module.exports = async (req, res) => {
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT p.picklist_number, p.nama_customer, 
-          CAST(SUM(p.qty_req) AS INTEGER) AS total_qty_req, 
+          CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
           CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
           (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack
           FROM picklist_raw p WHERE p.picklist_number = $1
