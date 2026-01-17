@@ -62,20 +62,30 @@ module.exports = async (req, res) => {
     }
 
 if (req.method === 'POST') {
-      if (action === 'save_item') {
-        // 1. Ambil scanned_by dari req.body (Sesuai kiriman Android)
-        const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
-        
-        const huid = `${picklist_number}-${Date.now()}`;
+  if (action === 'save_item') {
+    const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
+    
+    const huid = `${picklist_number}-${Date.now()}`;
 
-        // 2. Ganti packer_name menjadi scanned_by di Query INSERT
-        await client.query(`
-          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
+    // Kita masukkan container_number ke dalam kolom box_number juga agar tidak NULL
+    await client.query(`
+      INSERT INTO packing_transactions 
+      (huid, picklist_number, product_id, qty_packed, container_number, box_number, container_type, scanned_by, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [
+        huid, 
+        picklist_number, 
+        product_id, 
+        qty_packed, 
+        container_number, 
+        container_number, // Ini untuk kolom box_number (mengisi nilai yang sama)
+        container_type, 
+        scanned_by, 
+        'Packing' // Memberikan status awal
+    ]);
 
-        return res.status(200).json({ status: 'success', message: 'Item saved' });
-      }
+    return res.status(200).json({ status: 'success', message: 'Item saved' });
+  }
       
       // ... sisanya
 
