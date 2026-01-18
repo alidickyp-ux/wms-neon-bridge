@@ -24,10 +24,10 @@ module.exports = async (req, res) => {
 
       await client.query('BEGIN');
 
-      if (action === 'mark_shortage') {
-        const inputQty = parseInt(qty_actual) || 0; // Mengambil jumlah bermasalah dari Android
+    if (action === 'mark_shortage') {
+        const inputQty = parseInt(qty_actual) || 0; // Jumlah yang dilaporkan bermasalah (misal: 2)
         
-        // 1. UPDATE STATUS RAW (Set jadi 'fully picked' agar hilang dari picker & masuk antrean packing)
+        // 1. UPDATE STATUS RAW
         const updateRawQuery = `
           UPDATE picklist_raw 
           SET status = 'fully picked', picker_name = $1, updated_at = NOW()
@@ -37,23 +37,42 @@ module.exports = async (req, res) => {
         const resRaw = await client.query(updateRawQuery, [picker_name, picklist_number, product_id, location_id]);
         
         if (resRaw.rows.length === 0) throw new Error("Item tidak ditemukan");
-        const qtyReqAsli = resRaw.rows[0].qty_pick;
 
         // 2. AMBIL DESKRIPSI PRODUK
         const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
         const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-        // 3. INSERT TRANSAKSI (Mencatat qty yang dilaporkan bermasalah)
+        // 3. INSERT TRANSAKSI (History Shortage)
         await client.query(`
           INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, status, inventory_reason, description, scanned_at) 
           VALUES ($1, $2, $3, $4, $5, 'SHORTAGE', $6, $7, NOW())
         `, [picklist_number, product_id, location_id, inputQty, picker_name, inventory_reason, prodDesc]);
 
-        // 4. INSERT COMPLIANCE (Status WAITING agar muncul di menu komplen)
+        // 4. INSERT COMPLIANCE (INI KUNCINYA)
+        // qty_pick di tabel ini kita isi dengan inputQty agar Android menampilkan angka yang benar
         await client.query(`
-          INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
-          VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
-        `, [picklist_number, product_id, location_id, prodDesc, qtyReqAsli, `Shortage oleh ${picker_name}`, inventory_reason]);
+          INSERT INTO picking_compliance (
+            picklist_number, 
+            product_id, 
+            location_id, 
+            description, 
+            qty_pick, 
+            keterangan, 
+            status_awal, 
+            status_akhir, 
+            inventory_reason
+          ) VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
+        `, [
+            picklist_number, 
+            product_id, 
+            location_id, 
+            prodDesc, 
+            inputQty,                       // <--- PAKAI inputQty (misal 2), BUKAN qtyReqAsli
+            `Shortage oleh ${picker_name}`,   // <--- Untuk dibaca item.keterangan di Android
+            'OPEN', 
+            'WAITING', 
+            inventory_reason                // <--- Untuk dibaca item.inventory_reason di Android
+        ]);
 
         await client.query('COMMIT');
         return res.status(200).json({ status: 'success', message: 'Shortage tersinkron' });
