@@ -36,7 +36,7 @@ if (action === 'get_list') {
             ) AS items
         FROM picklist_raw p
         LEFT JOIN master_product mp ON p.product_id = mp.product_id
-        WHERE LOWER(p.status) IN ('open', 'partial picked')
+        WHERE LOWER(p.status) IN ('fully picked', 'partial picked')
         GROUP BY p.picklist_number, p.nama_customer, p.status
         ORDER BY p.picklist_number DESC
     `);
