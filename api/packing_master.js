@@ -20,23 +20,30 @@ if (action === 'get_list') {
             p.picklist_number, 
             p.nama_customer, 
             p.status,
-            COUNT(DISTINCT p.product_id)::int AS total_sku,
+            COUNT(p.product_id)::int AS total_sku,
             SUM(p.qty_pick)::int AS total_qty,
-            json_agg(json_build_object(
-                'product_id', p.product_id,
-                'description', COALESCE(mp.description, p.product_id),
-                'location_id', p.location_id,
-                'qty_pick', p.qty_pick,
-                'qty_actual', p.qty_actual,
-                'sisa_qty', (p.qty_pick - p.qty_actual),
-                'status', p.status
-            )) as items
-        FROM picklist_raw p 
+            -- Kita bungkus semua baris p menjadi array JSON items
+            json_agg(
+                json_build_object(
+                    'product_id', p.product_id,
+                    'description', COALESCE(mp.description, p.product_id),
+                    'location_id', p.location_id,
+                    'qty_pick', p.qty_pick,
+                    'qty_actual', p.qty_actual,
+                    'sisa_qty', (p.qty_pick - p.qty_actual),
+                    'status', p.status
+                )
+            ) AS items
+        FROM picklist_raw p
         LEFT JOIN master_product mp ON p.product_id = mp.product_id
         WHERE LOWER(p.status) IN ('open', 'partial picked')
         GROUP BY p.picklist_number, p.nama_customer, p.status
         ORDER BY p.picklist_number DESC
     `);
+
+    // Tambahkan log ini di console server Anda untuk memastikan 'items' tidak null
+    console.log("SAMPLE DATA:", JSON.stringify(result.rows[0]));
+
     return res.status(200).json({ status: 'success', data: result.rows });
 }
 
