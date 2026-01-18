@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
     client = await pool.connect();
 
     // ==========================================
-    // 1. LOGIKA SIMPAN DATA (POST)
+    // 1. LOGIKA SIMPAN DATA (POST) - DARI PICKER
     // ==========================================
     if (req.method === 'POST') {
       const { action, picklist_number, product_id, location_id, qty_actual, picker_name, inventory_reason } = req.body;
@@ -25,12 +25,13 @@ module.exports = async (req, res) => {
       try {
         await client.query('BEGIN');
 
-        // --- A. LOGIKA SHORTAGE ---
+        // --- A. LOGIKA SHORTAGE (Laporan Picker) ---
         if (action === 'mark_shortage') {
           const inputQty = parseInt(qty_actual) || 0;
-          const reason = inventory_reason || 'Barang Tidak Ada';
+          // inventory_reason adalah alasan dari Picker (Damage/Tidak Ada)
+          const pickerReason = inventory_reason || 'Barang Tidak Ada';
 
-          // 1. UPDATE STATUS RAW (Set 'fully picked' agar pindah ke Packing)
+          // 1. UPDATE STATUS RAW
           const updateRawQuery = `
             UPDATE picklist_raw 
             SET status = 'fully picked', picker_name = $1, updated_at = NOW()
@@ -45,22 +46,27 @@ module.exports = async (req, res) => {
           const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
           const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-          // 3. INSERT KE TRANSAKSI (History)
+          // 3. INSERT KE COMPLIANCE
+          // final_reason dibiarkan NULL karena akan diisi oleh Admin nanti
+          const queryCompliance = `
+            INSERT INTO picking_compliance (
+              picklist_number, product_id, location_id, description, 
+              qty_pick, keterangan, status_awal, status_akhir, inventory_reason, final_reason
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7, NULL)
+          `;
+          await client.query(queryCompliance, [
+            picklist_number, product_id, location_id, prodDesc, 
+            inputQty, `Shortage oleh ${picker_name}`, pickerReason
+          ]);
+
+          // 4. INSERT KE TRANSAKSI (History)
           await client.query(`
             INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, status, inventory_reason, description, scanned_at) 
             VALUES ($1, $2, $3, $4, $5, 'SHORTAGE', $6, $7, NOW())
-          `, [picklist_number, product_id, location_id, inputQty, picker_name, reason, prodDesc]);
-
-          // 4. INSERT KE COMPLIANCE (Sesuai model Android lu)
-          await client.query(`
-            INSERT INTO picking_compliance (
-              picklist_number, product_id, location_id, description, 
-              qty_pick, keterangan, status_awal, status_akhir, inventory_reason
-            ) VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
-          `, [picklist_number, product_id, location_id, prodDesc, inputQty, `Shortage oleh ${picker_name}`, reason]);
+          `, [picklist_number, product_id, location_id, inputQty, picker_name, pickerReason, prodDesc]);
 
           await client.query('COMMIT');
-          return res.status(200).json({ status: 'success', message: 'Shortage tersinkron' });
+          return res.status(200).json({ status: 'success', message: 'Laporan Shortage Berhasil' });
         }
 
         // --- B. LOGIKA UPDATE QTY NORMAL ---
