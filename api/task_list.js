@@ -25,7 +25,7 @@ module.exports = async (req, res) => {
       try {
         await client.query('BEGIN');
 
-        // --- A. LOGIKA SHORTAGE ---
+        // --- A. LOGIKA SHORTAGE (DARI PICKER) ---
         if (action === 'mark_shortage') {
           const inputQty = parseInt(qty_actual) || 0;
           const reason = inventory_reason || 'Barang Tidak Ada';
@@ -33,18 +33,21 @@ module.exports = async (req, res) => {
           const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
           const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
+          // 1. Update status di raw jadi fully picked (biar ilang dari HP picker)
           await client.query(
             `UPDATE picklist_raw SET status = 'fully picked', picker_name = $1, updated_at = NOW() 
              WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4`,
             [picker_name, picklist_number, product_id, location_id]
           );
 
+          // 2. Insert ke riwayat transaksi
           await client.query(
             `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
             [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
           );
 
+          // 3. Lempar ke tabel Compliance untuk divalidasi Admin
           await client.query(
             `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
@@ -55,7 +58,7 @@ module.exports = async (req, res) => {
           return res.status(200).json({ status: 'success' });
         }
 
-        // --- B. LOGIKA UPDATE QTY NORMAL ---
+        // --- B. LOGIKA UPDATE QTY NORMAL (SCAN BIASA) ---
         if (action === 'update_qty') {
           const inputQty = parseInt(qty_actual) || 0;
           const checkRes = await client.query(
@@ -91,15 +94,15 @@ module.exports = async (req, res) => {
           throw new Error("Item not found");
         }
 
-        // --- C. LOGIKA RESOLVE COMPLIANCE (BARU) ---
+        // --- C. LOGIKA RESOLVE COMPLIANCE (DARI ADMIN / POPUP) ---
         if (action === 'resolve_compliance') {
           if (!id) throw new Error("ID Compliance tidak ditemukan");
           
           await client.query(
             `UPDATE picking_compliance 
-             SET status_akhir = 'RESOLVED', final_reason = $1, updated_at = NOW() 
+             SET status_akhir = 'CLOSED', final_reason = $1, updated_at = NOW() 
              WHERE id = $2`,
-            [final_reason || 'Resolved by Admin', id]
+            [final_reason || 'Resolved', id]
           );
 
           await client.query('COMMIT');
@@ -119,23 +122,23 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
 
+      // JALUR GET COMPLIANCE: Tarik data WAITING + Join Nama Toko
+      if (action === 'get_compliance') {
+        const resComp = await client.query(`
+          SELECT 
+              c.*, 
+              p.nama_customer 
+          FROM picking_compliance c
+          LEFT JOIN (
+              SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw
+          ) p ON c.picklist_number = p.picklist_number
+          WHERE c.status_akhir = 'WAITING' 
+          ORDER BY c.created_at DESC
+        `);
+        return res.status(200).json({ status: 'success', data: resComp.rows });
+      }
 
-      // Jalur GET Compliance (JOIN untuk ambil Nama Toko)
-if (action === 'get_compliance') {
-  const resComp = await client.query(`
-    SELECT 
-        c.*, 
-        p.nama_customer 
-    FROM picking_compliance c
-    LEFT JOIN (
-        SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw
-    ) p ON c.picklist_number = p.picklist_number
-    WHERE c.status_akhir = 'WAITING' 
-    ORDER BY c.created_at DESC
-  `);
-  return res.status(200).json({ status: 'success', data: resComp.rows });
-}
-
+      // JALUR GET PACKING
       if (action === 'get_packing') {
         const queryPacking = `
           SELECT p.picklist_number, p.nama_customer, p.status, 
@@ -155,6 +158,7 @@ if (action === 'get_compliance') {
         return res.status(200).json({ status: 'success', data: resPack.rows });
       }
 
+      // JALUR GET DETAIL LOKASI
       if (picklist_number && action !== 'get_list') {
         const resDetail = await client.query(`
           SELECT pr.location_id, json_agg(json_build_object(
@@ -171,6 +175,7 @@ if (action === 'get_compliance') {
         return res.status(200).json({ status: 'success', data: resDetail.rows });
       }
 
+      // JALUR GET LIST UTAMA PICKER
       const resList = await client.query(`
         SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_pick)::int AS total_qty,
         COALESCE((
@@ -189,6 +194,7 @@ if (action === 'get_compliance') {
 
   } catch (err) {
     if (client) await client.query('ROLLBACK');
+    console.error("Global Error:", err.message);
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
