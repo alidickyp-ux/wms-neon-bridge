@@ -16,16 +16,13 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
-    // ==========================================
-    // 1. LOGIKA SIMPAN DATA (POST)
-    // ==========================================
     if (req.method === 'POST') {
       const { action, picklist_number, product_id, location_id, qty_actual, picker_name, inventory_reason } = req.body;
 
       try {
         await client.query('BEGIN');
 
-        // --- A. LOGIKA SHORTAGE (Laporan Barang Hilang/Damage) ---
+        // --- A. LOGIKA SHORTAGE (Aman dari validasi sisa 0) ---
         if (action === 'mark_shortage') {
           const inputQty = parseInt(qty_actual) || 0;
           const reason = inventory_reason || 'Barang Tidak Ada';
@@ -33,21 +30,21 @@ module.exports = async (req, res) => {
           const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
           const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-          // 1. Update Picklist Raw
+          // Update Raw: Langsung set fully picked karena ini shortage
           await client.query(
             `UPDATE picklist_raw SET status = 'fully picked', picker_name = $1, updated_at = NOW() 
              WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4`,
             [picker_name, picklist_number, product_id, location_id]
           );
 
-          // 2. Insert Transaksi (History)
+          // Insert Transaksi
           await client.query(
             `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
             [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
           );
 
-          // 3. Insert Compliance (Tanpa final_reason & updated_at)
+          // Insert Compliance
           await client.query(
             `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
@@ -68,6 +65,13 @@ module.exports = async (req, res) => {
 
           if (checkRes.rows.length > 0) {
             const item = checkRes.rows[0];
+            const sisaBolehAmbil = item.qty_pick - item.current;
+
+            // VALIDASI: Ini yang bikin error "Sisa yang boleh diambil: 0"
+            if (inputQty > sisaBolehAmbil) {
+              throw new Error(`Qty melebihi request! Sisa yang boleh diambil: ${sisaBolehAmbil}`);
+            }
+
             const newTotal = item.current + inputQty;
             const newStatus = (newTotal >= item.qty_pick) ? 'fully picked' : 'partial picked';
 
@@ -95,14 +99,13 @@ module.exports = async (req, res) => {
     }
 
     // ==========================================
-    // 2. LOGIKA AMBIL DATA (GET)
+    // 2. LOGIKA AMBIL DATA (GET) - TETAP LENGKAP
     // ==========================================
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
 
-      // Jalur 1: Khusus Packing
       if (action === 'get_packing') {
-        const resPack = await client.query(`
+        const queryPacking = `
           SELECT p.picklist_number, p.nama_customer, p.status, 
           SUM(p.qty_pick)::int AS total_qty, SUM(p.qty_actual)::int AS total_picked,
           COALESCE((
@@ -115,11 +118,11 @@ module.exports = async (req, res) => {
           ), '[]') as items
           FROM picklist_raw p WHERE p.status IN ('partial picked', 'fully picked')
           GROUP BY p.picklist_number, p.nama_customer, p.status ORDER BY p.updated_at DESC
-        `);
+        `;
+        const resPack = await client.query(queryPacking);
         return res.status(200).json({ status: 'success', data: resPack.rows });
       }
 
-      // Jalur 2: Detail Lokasi (Untuk Activity Eksekusi)
       if (picklist_number && action !== 'get_list') {
         const resDetail = await client.query(`
           SELECT pr.location_id, json_agg(json_build_object(
@@ -136,7 +139,6 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: resDetail.rows });
       }
 
-      // Jalur 3: List Utama (Picker List)
       const resList = await client.query(`
         SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_pick)::int AS total_qty,
         COALESCE((
