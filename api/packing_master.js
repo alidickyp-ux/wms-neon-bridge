@@ -13,20 +13,39 @@ module.exports = async (req, res) => {
 
     if (req.method === 'GET') {
       
+      // --- UPDATE LOGIC GET_LIST AGAR SUPPORT DIRECT FLOW ANDROID ---
       if (action === 'get_list') {
         const result = await client.query(`
-          SELECT picklist_number, nama_customer, status AS status_picklist,
-          COUNT(product_id)::int AS total_sku,
-          CAST(COALESCE(SUM(qty_actual), 0) AS INTEGER) AS total_pcs_picked
-          FROM picklist_raw 
-          WHERE LOWER(status) IN ('partial picked', 'fully picked')
-          GROUP BY picklist_number, nama_customer, status
-          ORDER BY picklist_number DESC
+          SELECT 
+            p.picklist_number, 
+            p.nama_customer, 
+            p.status,
+            COUNT(p.product_id)::int AS total_sku,
+            SUM(p.qty_pick)::int AS total_qty,
+            -- Subquery untuk membungkus items ke dalam array JSON agar Android bisa membacanya
+            (
+              SELECT json_agg(json_build_object(
+                'product_id', sub.product_id,
+                'description', COALESCE(mp.description, sub.product_id),
+                'location_id', sub.location_id,
+                'qty_pick', sub.qty_pick,
+                'qty_actual', sub.qty_actual,
+                'sisa_qty', (sub.qty_pick - sub.qty_actual),
+                'status', sub.status
+              ))
+              FROM picklist_raw sub
+              LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+              WHERE sub.picklist_number = p.picklist_number
+            ) as items
+          FROM picklist_raw p 
+          WHERE LOWER(p.status) IN ('open', 'partial picked')
+          GROUP BY p.picklist_number, p.nama_customer, p.status
+          ORDER BY p.picklist_number DESC
         `);
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
-      // --- PERBAIKAN LOGIC GET INFO (MENGGUNAKAN SUM DAN KOLOM TETAP) ---
+      // --- GET_INFO UNTUK PACKING (TIDAK BERUBAH LOGIKANYA, HANYA CLEANUP) ---
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT 
@@ -38,7 +57,7 @@ module.exports = async (req, res) => {
             JSON_AGG(
               JSON_BUILD_OBJECT(
                 'product_id', p.product_id, 
-                'nama_item', COALESCE(mp.description, p.product_id), -- Tetap nama_item untuk Android, ambil dari description Neon
+                'nama_item', COALESCE(mp.description, p.product_id),
                 'qty_pick', (
                    SELECT CAST(SUM(qty_actual) AS INTEGER) 
                    FROM picklist_raw 
@@ -57,7 +76,6 @@ module.exports = async (req, res) => {
           GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
 
-        // Membersihkan duplikasi SKU akibat JSON_AGG
         if (result.rows[0] && result.rows[0].items) {
             const seen = new Set();
             result.rows[0].items = result.rows[0].items.filter(el => {
@@ -66,7 +84,6 @@ module.exports = async (req, res) => {
                 return !duplicate;
             });
         }
-
         return res.status(200).json({ status: 'success', data: result.rows[0] });
       }
 
