@@ -16,9 +16,6 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
-    // ==========================================
-    // 1. SIMPAN DATA (POST)
-    // ==========================================
     if (req.method === 'POST') {
       const { 
         action, picklist_number, product_id, location_id, 
@@ -27,11 +24,11 @@ module.exports = async (req, res) => {
 
       await client.query('BEGIN');
 
-      // --- A. LOGIKA SHORTAGE (KOMPLAIN) ---
+      // --- 1. LOGIKA SHORTAGE (Lapor Komplain) ---
       if (action === 'mark_shortage') {
         const inputQty = parseInt(qty_actual) || 0; 
 
-        // Update picklist_raw jadi 'fully picked' (agar bisa ditarik ke Packing & hilang dari daftar picking)
+        // Update raw jadi 'fully picked' agar bisa ditarik ke Packing
         const updateRaw = await client.query(`
           UPDATE picklist_raw 
           SET status = 'fully picked', picker_name = $1, updated_at = NOW()
@@ -40,41 +37,37 @@ module.exports = async (req, res) => {
         `, [picker_name, picklist_number, product_id, location_id]);
         
         const qtyReqAsli = updateRaw.rows[0]?.qty_pick || 0;
-
         const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
         const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-        // Log ke Transaksi
+        // Log ke Transaksi Shortage
         await client.query(`
           INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, status, inventory_reason, description, scanned_at) 
           VALUES ($1, $2, $3, $4, $5, 'SHORTAGE', $6, $7, NOW())
         `, [picklist_number, product_id, location_id, inputQty, picker_name, inventory_reason, prodDesc]);
 
-        // Log ke Compliance: STATUS = 'WAITING' (Sesuai permintaan agar muncul di menu komplen)
+        // Log ke Compliance: WAITING agar muncul di menu komplain
         await client.query(`
           INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
           VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
-        `, [picklist_number, product_id, location_id, prodDesc, qtyReqAsli, `Shortage: ${inputQty} pcs oleh ${picker_name}`, inventory_reason]);
+        `, [picklist_number, product_id, location_id, prodDesc, qtyReqAsli, `Shortage oleh ${picker_name}`, inventory_reason]);
 
         await client.query('COMMIT');
-        return res.status(200).json({ status: 'success', message: 'Shortage tersinkron' });
+        return res.status(200).json({ status: 'success' });
       }
 
-      // --- B. LOGIKA PICKING NORMAL (UPDATE QTY) ---
+      // --- 2. LOGIKA NORMAL PICKING ---
       if (action === 'update_qty') {
         const inputQty = parseInt(qty_actual) || 0;
-        
-        const checkRes = await client.query(
+        const check = await client.query(
           `SELECT qty_pick, COALESCE(qty_actual, 0) as current FROM picklist_raw WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
           [picklist_number, product_id, location_id]
         );
 
-        if (checkRes.rows.length > 0) {
-          const item = checkRes.rows[0];
-          const newTotal = item.current + inputQty;
-          
-          // Penentuan status: Jika sudah cukup maka 'fully picked', jika belum 'partial picked'
-          const newStatus = (newTotal >= item.qty_pick) ? 'fully picked' : 'partial picked';
+        if (check.rows.length > 0) {
+          const newTotal = check.rows[0].current + inputQty;
+          // Status partial picked jika belum lengkap, fully picked jika sudah lengkap
+          const newStatus = (newTotal >= check.rows[0].qty_pick) ? 'fully picked' : 'partial picked';
 
           await client.query(
             `UPDATE picklist_raw SET qty_actual = $1, status = $2, picker_name = $3, updated_at = NOW() WHERE picklist_number = $4 AND product_id = $5 AND location_id = $6`,
@@ -92,32 +85,38 @@ module.exports = async (req, res) => {
       }
     }
 
-    // ==========================================
-    // 2. AMBIL DATA (GET) - UNTUK HP PICKER
-    // ==========================================
     if (req.method === 'GET') {
-      const { action, picklist_number } = req.query;
+      const { action } = req.query;
 
-      if (action === 'get_list' || !picklist_number) {
-        const queryList = `
+      // GET LIST UNTUK PICKER (Hanya Open & Partial Picked)
+      if (action === 'get_list') {
+        const query = `
           SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_pick)::int AS total_qty,
-          COALESCE((
-              SELECT json_agg(json_build_object(
-                'product_id', sub.product_id, 'description', COALESCE(mp.description, sub.product_id),
-                'location_id', sub.location_id, 'qty_pick', sub.qty_pick,
-                'qty_actual', COALESCE(sub.qty_actual, 0), 'sisa_qty', (sub.qty_pick - COALESCE(sub.qty_actual, 0)),
-                'status', sub.status
-              ))
-              FROM picklist_raw sub
-              LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-              WHERE sub.picklist_number = p.picklist_number AND sub.status NOT IN ('fully picked')
-          ), '[]') as items
+          (SELECT json_agg(sub) FROM (
+             SELECT s.product_id, COALESCE(mp.description, s.product_id) as description, s.location_id, s.qty_pick, 
+             COALESCE(s.qty_actual, 0) as qty_actual, (s.qty_pick - COALESCE(s.qty_actual, 0)) as sisa_qty, s.status
+             FROM picklist_raw s LEFT JOIN master_product mp ON s.product_id = mp.product_id
+             WHERE s.picklist_number = p.picklist_number AND s.status != 'fully picked'
+          ) sub) as items
           FROM picklist_raw p 
           WHERE p.status IN ('Open', 'open', 'partial picked')
           GROUP BY p.picklist_number, p.nama_customer, p.status
           ORDER BY p.picklist_number DESC
         `;
-        const result = await client.query(queryList);
+        const result = await client.query(query);
+        return res.status(200).json({ status: 'success', data: result.rows });
+      }
+
+      // GET LIST UNTUK PACKING (Menarik status partial picked & fully picked)
+      if (action === 'get_packing') {
+        const query = `
+          SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_actual)::int AS total_picked
+          FROM picklist_raw p 
+          WHERE p.status IN ('partial picked', 'fully picked')
+          GROUP BY p.picklist_number, p.nama_customer, p.status
+          ORDER BY p.updated_at DESC
+        `;
+        const result = await client.query(query);
         return res.status(200).json({ status: 'success', data: result.rows });
       }
     }
