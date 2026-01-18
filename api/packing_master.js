@@ -14,40 +14,31 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       
       // --- UPDATE LOGIC GET_LIST (VERSI PERBAIKAN TOTAL) ---
-      if (action === 'get_list') {
-        const result = await client.query(`
-          SELECT 
+if (action === 'get_list') {
+    const result = await client.query(`
+        SELECT 
             p.picklist_number, 
             p.nama_customer, 
             p.status,
-            COUNT(p.product_id)::int AS total_sku,
+            COUNT(DISTINCT p.product_id)::int AS total_sku,
             SUM(p.qty_pick)::int AS total_qty,
-            -- Gunakan COALESCE agar jika detail kosong, Android tetap menerima array kosong [] bukan null
-            COALESCE((
-              SELECT json_agg(json_build_object(
-                'product_id', sub.product_id,
-                'description', COALESCE(mp.description, sub.product_id),
-                'location_id', sub.location_id,
-                'qty_pick', sub.qty_pick,
-                'qty_actual', sub.qty_actual,
-                'sisa_qty', (sub.qty_pick - sub.qty_actual),
-                'status', sub.status
-              ))
-              FROM picklist_raw sub
-              LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-              WHERE sub.picklist_number = p.picklist_number
-            ), '[]') as items
-          FROM picklist_raw p 
-          WHERE LOWER(p.status) IN ('open', 'partial picked')
-          GROUP BY p.picklist_number, p.nama_customer, p.status
-          ORDER BY p.picklist_number DESC
-        `);
-
-        // Log di server untuk memastikan data terkirim
-        console.log("DEBUG_SERVER: Mengirim PCB", result.rows.length, "baris");
-        
-        return res.status(200).json({ status: 'success', data: result.rows });
-      }
+            json_agg(json_build_object(
+                'product_id', p.product_id,
+                'description', COALESCE(mp.description, p.product_id),
+                'location_id', p.location_id,
+                'qty_pick', p.qty_pick,
+                'qty_actual', p.qty_actual,
+                'sisa_qty', (p.qty_pick - p.qty_actual),
+                'status', p.status
+            )) as items
+        FROM picklist_raw p 
+        LEFT JOIN master_product mp ON p.product_id = mp.product_id
+        WHERE LOWER(p.status) IN ('open', 'partial picked')
+        GROUP BY p.picklist_number, p.nama_customer, p.status
+        ORDER BY p.picklist_number DESC
+    `);
+    return res.status(200).json({ status: 'success', data: result.rows });
+}
 
       // --- GET_INFO UNTUK PACKING (TIDAK BERUBAH LOGIKANYA, HANYA CLEANUP) ---
       if (action === 'get_info') {
