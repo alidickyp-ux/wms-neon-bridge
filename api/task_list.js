@@ -119,15 +119,22 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
 
-      // JALUR COMPLIANCE (BARU)
-      if (action === 'get_compliance') {
-        const resComp = await client.query(`
-          SELECT * FROM picking_compliance 
-          WHERE status_akhir = 'WAITING' 
-          ORDER BY created_at DESC
-        `);
-        return res.status(200).json({ status: 'success', data: resComp.rows });
-      }
+
+      // Jalur GET Compliance (JOIN untuk ambil Nama Toko)
+if (action === 'get_compliance') {
+  const resComp = await client.query(`
+    SELECT 
+        c.*, 
+        p.nama_customer 
+    FROM picking_compliance c
+    LEFT JOIN (
+        SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw
+    ) p ON c.picklist_number = p.picklist_number
+    WHERE c.status_akhir = 'WAITING' 
+    ORDER BY c.created_at DESC
+  `);
+  return res.status(200).json({ status: 'success', data: resComp.rows });
+}
 
       if (action === 'get_packing') {
         const queryPacking = `
