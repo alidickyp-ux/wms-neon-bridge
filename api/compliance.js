@@ -19,34 +19,31 @@ module.exports = async (req, res) => {
     if (req.method === 'POST') {
       const { action, picklist_number, product_id, location_id, qty_actual, picker_name, inventory_reason } = req.body;
 
-      // ==========================================================
-      // LOGIKA SHORTAGE: BYPASS SEMUA VALIDASI QTY
-      // ==========================================================
-      if (action === 'mark_shortage') {
-        try {
-          await client.query('BEGIN');
+      try {
+        await client.query('BEGIN');
+
+        // ----------------------------------------------------------
+        // A. JALUR SHORTAGE (LANGSUNG GAS)
+        // ----------------------------------------------------------
+        if (action === 'mark_shortage') {
           const inputQty = parseInt(qty_actual) || 0;
           const reason = inventory_reason || 'Barang Tidak Ada';
 
-          // Ambil Deskripsi
           const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
           const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-          // 1. Paksa Update ke fully picked tanpa peduli qty sisa
           await client.query(
             `UPDATE picklist_raw SET status = 'fully picked', picker_name = $1, updated_at = NOW() 
              WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4`,
             [picker_name, picklist_number, product_id, location_id]
           );
 
-          // 2. Simpan ke Transaksi
           await client.query(
             `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
             [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
           );
 
-          // 3. Simpan ke Compliance
           await client.query(
             `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
@@ -54,37 +51,48 @@ module.exports = async (req, res) => {
           );
 
           await client.query('COMMIT');
-          return res.status(200).json({ status: 'success', message: 'Shortage Berhasil' });
-        } catch (e) {
-          await client.query('ROLLBACK');
-          throw e;
+          return res.status(200).json({ status: 'success' });
         }
-      }
 
-      // ==========================================================
-      // LOGIKA UPDATE QTY NORMAL: TETAP PAKE VALIDASI
-      // ==========================================================
-      if (action === 'update_qty') {
-        try {
-          await client.query('BEGIN');
+        // ----------------------------------------------------------
+        // B. JALUR SIMPAN NORMAL (FIX VALIDASI SISA 0)
+        // ----------------------------------------------------------
+        if (action === 'update_qty') {
           const inputQty = parseInt(qty_actual) || 0;
           
           const check = await client.query(
-            `SELECT qty_pick, COALESCE(qty_actual, 0) as current FROM picklist_raw WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
+            `SELECT qty_pick, COALESCE(qty_actual, 0) as current, status 
+             FROM picklist_raw WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
             [picklist_number, product_id, location_id]
           );
 
-          if (check.rows.length === 0) throw new Error("Data tidak ditemukan");
+          if (check.rows.length === 0) throw new Error("Data tidak ada di database!");
           
           const item = check.rows[0];
-          const sisa = item.qty_pick - item.current;
-
-          // Validasi Qty hanya untuk scan normal
-          if (inputQty > sisa) {
-            throw new Error(`Qty melebihi request! Sisa: ${sisa}`);
+          
+          // JIKA STATUS SUDAH FULLY PICKED, JANGAN PROSES LAGI, TAPI JANGAN KASIH ERROR 500
+          if (item.status === 'fully picked') {
+            await client.query('COMMIT');
+            return res.status(200).json({ status: 'success', message: 'Sudah terupdate sebelumnya' });
           }
 
-          const newTotal = item.current + inputQty;
+          const sisa = item.qty_pick - item.current;
+          
+          // AMBIL YANG TERKECIL: Biar nggak luber (overpick)
+          const qtyYangBisaDiambil = Math.min(inputQty, sisa);
+          
+          // Kalau sisa sudah 0 tapi picker maksa simpan, kita anggap sukses saja (biar nggak 500)
+          if (sisa <= 0) {
+            await client.query(
+              `UPDATE picklist_raw SET status = 'fully picked', updated_at = NOW() 
+               WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
+              [picklist_number, product_id, location_id]
+            );
+            await client.query('COMMIT');
+            return res.status(200).json({ status: 'success' });
+          }
+
+          const newTotal = item.current + qtyYangBisaDiambil;
           const newStatus = (newTotal >= item.qty_pick) ? 'fully picked' : 'partial picked';
 
           await client.query(
@@ -96,20 +104,21 @@ module.exports = async (req, res) => {
           await client.query(
             `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, status) 
              VALUES ($1, $2, $3, $4, $5, NOW(), 'NORMAL')`,
-            [picklist_number, product_id, location_id, inputQty, picker_name]
+            [picklist_number, product_id, location_id, qtyYangBisaDiambil, picker_name]
           );
 
           await client.query('COMMIT');
           return res.status(200).json({ status: 'success' });
-        } catch (e) {
-          await client.query('ROLLBACK');
-          throw e;
         }
+      } catch (postErr) {
+        await client.query('ROLLBACK');
+        console.error("EROR POST:", postErr.message);
+        return res.status(500).json({ status: 'error', message: postErr.message });
       }
     }
 
     // ==========================================
-    // LOGIKA GET (LIST & DETAIL) - GAK BERUBAH
+    // 2. LOGIKA AMBIL DATA (GET) - TETAP UTUH
     // ==========================================
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
@@ -143,7 +152,7 @@ module.exports = async (req, res) => {
     }
 
   } catch (err) {
-    console.error("Critical Error:", err.message);
+    if (client) await client.query('ROLLBACK');
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
