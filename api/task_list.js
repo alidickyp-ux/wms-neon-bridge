@@ -24,60 +24,57 @@ module.exports = async (req, res) => {
 
       await client.query('BEGIN');
 
-    if (action === 'mark_shortage') {
-        const inputQty = parseInt(qty_actual) || 0; // Jumlah yang dilaporkan bermasalah (misal: 2)
+if (action === 'mark_shortage') {
+        const inputQty = parseInt(qty_actual) || 0; 
         
-        // 1. UPDATE STATUS RAW
-        const updateRawQuery = `
-          UPDATE picklist_raw 
-          SET status = 'fully picked', picker_name = $1, updated_at = NOW()
-          WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4
-          RETURNING qty_pick;
-        `;
-        const resRaw = await client.query(updateRawQuery, [picker_name, picklist_number, product_id, location_id]);
-        
-        if (resRaw.rows.length === 0) throw new Error("Item tidak ditemukan");
+        try {
+          await client.query('BEGIN'); // Pastikan transaksi dimulai
 
-        // 2. AMBIL DESKRIPSI PRODUK
-        const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
-        const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
+          // 1. UPDATE STATUS RAW
+          const updateRawQuery = `
+            UPDATE picklist_raw 
+            SET status = 'fully picked', picker_name = $1, updated_at = NOW()
+            WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4
+            RETURNING qty_pick;
+          `;
+          const resRaw = await client.query(updateRawQuery, [picker_name, picklist_number, product_id, location_id]);
+          
+          if (resRaw.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ status: 'error', message: "Item tidak ditemukan di picklist_raw" });
+          }
 
-        // 3. INSERT TRANSAKSI (History Shortage)
-        await client.query(`
-          INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, status, inventory_reason, description, scanned_at) 
-          VALUES ($1, $2, $3, $4, $5, 'SHORTAGE', $6, $7, NOW())
-        `, [picklist_number, product_id, location_id, inputQty, picker_name, inventory_reason, prodDesc]);
+          // 2. AMBIL DESKRIPSI PRODUK (Gunakan LEFT JOIN atau COALESCE agar tidak null)
+          const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
+          const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-        // 4. INSERT COMPLIANCE (INI KUNCINYA)
-        // qty_pick di tabel ini kita isi dengan inputQty agar Android menampilkan angka yang benar
-        await client.query(`
-          INSERT INTO picking_compliance (
-            picklist_number, 
-            product_id, 
-            location_id, 
-            description, 
-            qty_pick, 
-            keterangan, 
-            status_awal, 
-            status_akhir, 
-            inventory_reason
-          ) VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
-        `, [
-            picklist_number, 
-            product_id, 
-            location_id, 
-            prodDesc, 
-            inputQty,                       // <--- PAKAI inputQty (misal 2), BUKAN qtyReqAsli
-            `Shortage oleh ${picker_name}`,   // <--- Untuk dibaca item.keterangan di Android
-            'OPEN', 
-            'WAITING', 
-            inventory_reason                // <--- Untuk dibaca item.inventory_reason di Android
-        ]);
+          // 3. INSERT TRANSAKSI
+          await client.query(`
+            INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, status, inventory_reason, description, scanned_at) 
+            VALUES ($1, $2, $3, $4, $5, 'SHORTAGE', $6, $7, NOW())
+          `, [picklist_number, product_id, location_id, inputQty, picker_name, inventory_reason, prodDesc]);
 
-        await client.query('COMMIT');
-        return res.status(200).json({ status: 'success', message: 'Shortage tersinkron' });
-      }
+          // 4. INSERT COMPLIANCE
+          await client.query(`
+            INSERT INTO picking_compliance (
+              picklist_number, product_id, location_id, description, 
+              qty_pick, keterangan, status_awal, status_akhir, inventory_reason
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)
+          `, [
+              picklist_number, product_id, location_id, prodDesc, 
+              inputQty, `Shortage oleh ${picker_name}`, 
+              'OPEN', 'WAITING', inventory_reason
+          ]);
 
+          await client.query('COMMIT');
+          return res.status(200).json({ status: 'success', message: 'Shortage tersinkron' });
+
+        } catch (dbError) {
+          await client.query('ROLLBACK');
+          console.error("Database Error Detail:", dbError);
+          return res.status(500).json({ status: 'error', message: dbError.message });
+        }
+  
       if (action === 'update_qty') {
         const checkRes = await client.query(
           `SELECT qty_pick, COALESCE(qty_actual, 0) as current FROM picklist_raw WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
