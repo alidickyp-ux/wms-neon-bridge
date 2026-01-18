@@ -16,13 +16,16 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
+    // ==========================================
+    // 1. LOGIKA SIMPAN DATA (POST)
+    // ==========================================
     if (req.method === 'POST') {
-      const { action, picklist_number, product_id, location_id, qty_actual, picker_name, inventory_reason } = req.body;
+      const { action, picklist_number, product_id, location_id, qty_actual, picker_name, inventory_reason, id, final_reason } = req.body;
 
       try {
         await client.query('BEGIN');
 
-        // --- A. LOGIKA SHORTAGE (Aman dari validasi sisa 0) ---
+        // --- A. LOGIKA SHORTAGE ---
         if (action === 'mark_shortage') {
           const inputQty = parseInt(qty_actual) || 0;
           const reason = inventory_reason || 'Barang Tidak Ada';
@@ -30,21 +33,18 @@ module.exports = async (req, res) => {
           const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
           const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-          // Update Raw: Langsung set fully picked karena ini shortage
           await client.query(
             `UPDATE picklist_raw SET status = 'fully picked', picker_name = $1, updated_at = NOW() 
              WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4`,
             [picker_name, picklist_number, product_id, location_id]
           );
 
-          // Insert Transaksi
           await client.query(
             `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
             [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
           );
 
-          // Insert Compliance
           await client.query(
             `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
              VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
@@ -67,7 +67,6 @@ module.exports = async (req, res) => {
             const item = checkRes.rows[0];
             const sisaBolehAmbil = item.qty_pick - item.current;
 
-            // VALIDASI: Ini yang bikin error "Sisa yang boleh diambil: 0"
             if (inputQty > sisaBolehAmbil) {
               throw new Error(`Qty melebihi request! Sisa yang boleh diambil: ${sisaBolehAmbil}`);
             }
@@ -91,6 +90,22 @@ module.exports = async (req, res) => {
           }
           throw new Error("Item not found");
         }
+
+        // --- C. LOGIKA RESOLVE COMPLIANCE (BARU) ---
+        if (action === 'resolve_compliance') {
+          if (!id) throw new Error("ID Compliance tidak ditemukan");
+          
+          await client.query(
+            `UPDATE picking_compliance 
+             SET status_akhir = 'RESOLVED', final_reason = $1, updated_at = NOW() 
+             WHERE id = $2`,
+            [final_reason || 'Resolved by Admin', id]
+          );
+
+          await client.query('COMMIT');
+          return res.status(200).json({ status: 'success', message: 'Compliance Resolved' });
+        }
+
       } catch (postErr) {
         await client.query('ROLLBACK');
         console.error("POST Error:", postErr.message);
@@ -99,10 +114,20 @@ module.exports = async (req, res) => {
     }
 
     // ==========================================
-    // 2. LOGIKA AMBIL DATA (GET) - TETAP LENGKAP
+    // 2. LOGIKA AMBIL DATA (GET)
     // ==========================================
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
+
+      // JALUR COMPLIANCE (BARU)
+      if (action === 'get_compliance') {
+        const resComp = await client.query(`
+          SELECT * FROM picking_compliance 
+          WHERE status_akhir = 'WAITING' 
+          ORDER BY created_at DESC
+        `);
+        return res.status(200).json({ status: 'success', data: resComp.rows });
+      }
 
       if (action === 'get_packing') {
         const queryPacking = `
