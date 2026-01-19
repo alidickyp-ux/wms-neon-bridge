@@ -49,45 +49,43 @@ if (action === 'get_info') {
         SELECT 
             p.picklist_number, 
             p.nama_customer, 
-            -- REQ: Total permintaan awal
-            CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
-            -- PICK: Menjumlahkan SEMUA qty_actual dari SEMUA baris (Normal & Shortage)
+            -- REQ: Total qty yang seharusnya di-pick (Planning)
+            CAST(SUM(COALESCE(p.qty_pick, 0)) AS INTEGER) AS total_qty_req, 
+            -- PICK: Total qty yang BENAR-BENAR sudah di-pick (Normal + Shortage)
             CAST(SUM(COALESCE(p.qty_actual, 0)) AS INTEGER) AS total_pick, 
-            -- PACK: Total yang sudah masuk box
+            -- PACK: Total qty yang sudah masuk ke transaksi packing
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            -- ITEMS: Grouping per SKU untuk validasi di Android
-            JSON_AGG(
-                JSON_BUILD_OBJECT(
-                    'product_id', p.product_id, 
-                    'nama_item', COALESCE(mp.description, p.product_id),
-                    -- Batas Packing per SKU = Total qty_actual SKU tersebut di semua lokasi
-                    'qty_pick', (
-                        SELECT CAST(SUM(COALESCE(qty_actual, 0)) AS INTEGER) 
-                        FROM picklist_raw 
-                        WHERE picklist_number = p.picklist_number AND product_id = p.product_id
-                    ),
-                    'qty_packed_total', (
-                        SELECT COALESCE(SUM(qty_packed), 0)::int 
-                        FROM packing_transactions 
-                        WHERE picklist_number = p.picklist_number AND product_id = p.product_id
-                    )
-                )
+            
+            -- ITEMS: List barang untuk validasi SKU di Android
+            (
+                SELECT json_agg(item_group)
+                FROM (
+                    SELECT 
+                        sub.product_id,
+                        MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
+                        -- SUM qty_actual dari semua lokasi (Fix Multiple Location)
+                        SUM(COALESCE(sub.qty_actual, 0))::int as qty_pick,
+                        -- SUM qty_packed yang sudah sukses masuk box
+                        (
+                            SELECT COALESCE(SUM(qty_packed), 0)::int 
+                            FROM packing_transactions 
+                            WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id
+                        ) as qty_packed_total
+                    FROM picklist_raw sub
+                    LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+                    WHERE sub.picklist_number = $1
+                    GROUP BY sub.product_id, sub.picklist_number
+                ) item_group
             ) as items
         FROM picklist_raw p 
-        LEFT JOIN master_product mp ON p.product_id = mp.product_id
         WHERE p.picklist_number = $1
         GROUP BY p.picklist_number, p.nama_customer
     `, [pcb]);
 
-    // Cleanup duplikat JSON_AGG agar Android tidak bingung
-    if (result.rows[0] && result.rows[0].items) {
-        const seen = new Set();
-        result.rows[0].items = result.rows[0].items.filter(el => {
-            const isDuplicate = seen.has(el.product_id);
-            seen.add(el.product_id);
-            return !isDuplicate;
-        });
+    if (result.rows.length === 0) {
+        return res.status(404).json({ status: 'error', message: 'Data tidak ditemukan' });
     }
+
     return res.status(200).json({ status: 'success', data: result.rows[0] });
 }
 
