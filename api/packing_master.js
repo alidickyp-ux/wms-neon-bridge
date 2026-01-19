@@ -51,19 +51,19 @@ if (action === 'get_info') {
             p.nama_customer, 
             -- REQ: Total qty yang seharusnya di-pick (Planning)
             CAST(SUM(COALESCE(p.qty_pick, 0)) AS INTEGER) AS total_qty_req, 
-            -- PICK: Total qty yang BENAR-BENAR sudah di-pick (Normal + Shortage)
+            -- PICK: Menjumlahkan SEMUA qty_actual dari SEMUA baris (Normal & Shortage)
             CAST(SUM(COALESCE(p.qty_actual, 0)) AS INTEGER) AS total_pick, 
             -- PACK: Total qty yang sudah masuk ke transaksi packing
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
             
-            -- ITEMS: List barang untuk validasi SKU di Android
+            -- ITEMS: List barang untuk validasi SKU di Android (DIBUNGKUS AGAR TIDAK DUPLIKAT)
             (
                 SELECT json_agg(item_group)
                 FROM (
                     SELECT 
                         sub.product_id,
                         MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
-                        -- SUM qty_actual dari semua lokasi (Fix Multiple Location)
+                        -- SUM qty_actual dari semua lokasi (Mau dia Normal atau Shortage)
                         SUM(COALESCE(sub.qty_actual, 0))::int as qty_pick,
                         -- SUM qty_packed yang sudah sukses masuk box
                         (
