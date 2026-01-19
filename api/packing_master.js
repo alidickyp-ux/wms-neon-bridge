@@ -1,19 +1,29 @@
 const { Pool } = require('pg');
+
 const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL, 
   ssl: { rejectUnauthorized: false } 
 });
 
 module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   const { action, pcb, type, container } = req.query;
   let client;
 
   try {
     client = await pool.connect();
 
+    // ==========================================
+    // 1. LOGIKA AMBIL DATA (GET)
+    // ==========================================
     if (req.method === 'GET') {
       
-      // 1. AMBIL DAFTAR PCB UNTUK HALAMAN UTAMA PACKING
+      // A. AMBIL DAFTAR PCB UNTUK HALAMAN UTAMA PACKING
       if (action === 'get_list') {
         const result = await client.query(`
           SELECT 
@@ -21,7 +31,7 @@ module.exports = async (req, res) => {
             p.nama_customer, 
             p.status,
             COUNT(DISTINCT p.product_id)::int AS total_sku,
-            SUM(p.qty_actual)::int AS total_pcs_picked, -- Menampilkan berapa yang sudah di-pick
+            SUM(p.qty_actual)::int AS total_pcs_picked,
             json_agg(
               json_build_object(
                 'product_id', p.product_id,
@@ -41,55 +51,43 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
-      // 2. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
+      // B. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
+      if (action === 'get_info') {
+        const result = await client.query(`
+            SELECT 
+                p.picklist_number, 
+                p.nama_customer, 
+                CAST(SUM(COALESCE(p.qty_pick, 0)) AS INTEGER) AS total_qty_req, 
+                CAST(SUM(COALESCE(p.qty_actual, 0)) AS INTEGER) AS total_pick, 
+                (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
+                (
+                    SELECT json_agg(item_group)
+                    FROM (
+                        SELECT 
+                            sub.product_id,
+                            MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
+                            SUM(COALESCE(sub.qty_actual, 0))::int as qty_pick,
+                            (
+                                SELECT COALESCE(SUM(qty_packed), 0)::int 
+                                FROM packing_transactions 
+                                WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id
+                            ) as qty_packed_total
+                        FROM picklist_raw sub
+                        LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+                        WHERE sub.picklist_number = $1
+                        GROUP BY sub.product_id, sub.picklist_number
+                    ) item_group
+                ) as items
+            FROM picklist_raw p 
+            WHERE p.picklist_number = $1
+            GROUP BY p.picklist_number, p.nama_customer
+        `, [pcb]);
 
-// --- BAGIAN GET_INFO YANG SUDAH DI-FIX TOTAL ---
-if (action === 'get_info') {
-    const result = await client.query(`
-        SELECT 
-            p.picklist_number, 
-            p.nama_customer, 
-            -- REQ: Total qty yang seharusnya di-pick (Planning)
-            CAST(SUM(COALESCE(p.qty_pick, 0)) AS INTEGER) AS total_qty_req, 
-            -- PICK: Menjumlahkan SEMUA qty_actual dari SEMUA baris (Normal & Shortage)
-            CAST(SUM(COALESCE(p.qty_actual, 0)) AS INTEGER) AS total_pick, 
-            -- PACK: Total qty yang sudah masuk ke transaksi packing
-            (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            
-            -- ITEMS: List barang untuk validasi SKU di Android (DIBUNGKUS AGAR TIDAK DUPLIKAT)
-            (
-                SELECT json_agg(item_group)
-                FROM (
-                    SELECT 
-                        sub.product_id,
-                        MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
-                        -- SUM qty_actual dari semua lokasi (Mau dia Normal atau Shortage)
-                        SUM(COALESCE(sub.qty_actual, 0))::int as qty_pick,
-                        -- SUM qty_packed yang sudah sukses masuk box
-                        (
-                            SELECT COALESCE(SUM(qty_packed), 0)::int 
-                            FROM packing_transactions 
-                            WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id
-                        ) as qty_packed_total
-                    FROM picklist_raw sub
-                    LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-                    WHERE sub.picklist_number = $1
-                    GROUP BY sub.product_id, sub.picklist_number
-                ) item_group
-            ) as items
-        FROM picklist_raw p 
-        WHERE p.picklist_number = $1
-        GROUP BY p.picklist_number, p.nama_customer
-    `, [pcb]);
+        if (result.rows.length === 0) return res.status(404).json({ status: 'error', message: 'Data tidak ditemukan' });
+        return res.status(200).json({ status: 'success', data: result.rows[0] });
+      }
 
-    if (result.rows.length === 0) {
-        return res.status(404).json({ status: 'error', message: 'Data tidak ditemukan' });
-    }
-
-    return res.status(200).json({ status: 'success', data: result.rows[0] });
-}
-
-      // 3. GENERATE NOMOR CONTAINER BERIKUTNYA
+      // C. GENERATE NOMOR CONTAINER BERIKUTNYA
       if (action === 'get_next_container') {
         const result = await client.query(`
           SELECT COUNT(DISTINCT container_number) + 1 AS next_num 
@@ -99,9 +97,8 @@ if (action === 'get_info') {
         return res.status(200).json({ status: 'success', next_container_number: `${type}-${nextNum}` });
       }
 
-      // 4. AMBIL ISI LACI (DENGAN GROUPING SKU & HUID TUNGGAL)
+      // D. AMBIL ISI LACI (DENGAN GROUPING SKU & HUID TUNGGAL)
       if (action === 'get_laci') {
-        // Ambil list item yang di-SUM per SKU agar tidak double baris
         const list = await client.query(`
           SELECT 
             pt.product_id, 
@@ -113,7 +110,6 @@ if (action === 'get_info') {
           GROUP BY pt.product_id, mp.description
         `, [pcb, container]);
         
-        // Ambil HUID tunggal untuk container ini
         const huidRes = await client.query(`
           SELECT huid FROM packing_transactions 
           WHERE picklist_number = $1 AND container_number = $2 
@@ -133,10 +129,43 @@ if (action === 'get_info') {
           packing_list: list.rows 
         });
       }
+
+      // E. AMBIL DATA UNTUK RE-PRINT LABEL (GRUP PER BOX)
+      if (action === 'get_print_data') {
+        const result = await client.query(`
+            SELECT 
+                container_number, 
+                huid, 
+                container_type,
+                CAST(weight_kg AS FLOAT) as weight_kg,
+                CAST(SUM(qty_packed) AS INTEGER) as total_pcs_box,
+                (
+                    SELECT json_agg(json_build_object(
+                        'product_id', sub.product_id,
+                        'nama_item', COALESCE(mp.description, sub.product_id),
+                        'qty', sub.qty_packed
+                    ))
+                    FROM packing_transactions sub
+                    LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+                    WHERE sub.picklist_number = pt.picklist_number AND sub.container_number = pt.container_number
+                ) as item_details
+            FROM packing_transactions pt
+            WHERE pt.picklist_number = $1
+            GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
+            ORDER BY pt.container_number ASC
+        `, [pcb]);
+
+        return res.status(200).json({ status: 'success', data: result.rows });
+      }
     }
 
+    // ==========================================
+    // 2. LOGIKA SIMPAN DATA (POST)
+    // ==========================================
     if (req.method === 'POST') {
-      // 5. SIMPAN BARANG KE DALAM BOX (PACKING)
+      const { action } = req.body;
+
+      // F. SIMPAN BARANG KE DALAM BOX (PACKING)
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
@@ -168,7 +197,7 @@ if (action === 'get_info') {
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
 
-      // 6. TUTUP BOX (INPUT BERAT)
+      // G. TUTUP BOX (INPUT BERAT)
       if (action === 'close_box') {
         const { pcb, container, weight_kg } = req.body;
         await client.query(`
