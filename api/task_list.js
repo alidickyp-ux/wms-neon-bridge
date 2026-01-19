@@ -26,37 +26,45 @@ module.exports = async (req, res) => {
         await client.query('BEGIN');
 
         // --- A. LOGIKA SHORTAGE (DARI PICKER) ---
-        if (action === 'mark_shortage') {
-          const inputQty = parseInt(qty_actual) || 0;
-          const reason = inventory_reason || 'Barang Tidak Ada';
+// --- A. LOGIKA SHORTAGE (DI DALAM task_list.js) ---
+if (action === 'mark_shortage') {
+  // qty_actual di sini adalah JUMLAH BARANG YANG DITEMUKAN picker (misal dapet 2 dari 10)
+  const inputQty = parseInt(qty_actual) || 0; 
+  const reason = inventory_reason || 'Barang Tidak Ada';
 
-          const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
-          const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
+  const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
+  const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-          // 1. Update status di raw jadi fully picked (biar ilang dari HP picker)
-          await client.query(
-            `UPDATE picklist_raw SET status = 'fully picked', picker_name = $1, updated_at = NOW() 
-             WHERE picklist_number = $2 AND product_id = $3 AND location_id = $4`,
-            [picker_name, picklist_number, product_id, location_id]
-          );
+  // 1. UPDATE picklist_raw (INI KUNCINYA!)
+  // Kita harus set qty_actual sesuai yang ditemukan, dan status jadi 'fully picked' 
+  // agar header packing bisa menjumlahkan (SUM) angka ini.
+  await client.query(
+    `UPDATE picklist_raw 
+     SET qty_actual = $1, 
+         status = 'fully picked', 
+         picker_name = $2, 
+         updated_at = NOW() 
+     WHERE picklist_number = $3 AND product_id = $4 AND location_id = $5`,
+    [inputQty, picker_name, picklist_number, product_id, location_id]
+  );
 
-          // 2. Insert ke riwayat transaksi
-          await client.query(
-            `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
-            [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
-          );
+  // 2. INSERT ke picking_transactions (History)
+  await client.query(
+    `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
+     VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
+    [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
+  );
 
-          // 3. Lempar ke tabel Compliance untuk divalidasi Admin
-          await client.query(
-            `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
-             VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
-            [picklist_number, product_id, location_id, prodDesc, inputQty, `Shortage oleh ${picker_name}`, reason]
-          );
+  // 3. INSERT ke picking_compliance (Untuk Admin)
+  await client.query(
+    `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
+     VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
+    [picklist_number, product_id, location_id, prodDesc, inputQty, `Shortage oleh ${picker_name}`, reason]
+  );
 
-          await client.query('COMMIT');
-          return res.status(200).json({ status: 'success' });
-        }
+  await client.query('COMMIT');
+  return res.status(200).json({ status: 'success' });
+}
 
         // --- B. LOGIKA UPDATE QTY NORMAL (SCAN BIASA) ---
         if (action === 'update_qty') {
