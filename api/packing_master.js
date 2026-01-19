@@ -13,58 +13,49 @@ module.exports = async (req, res) => {
 
     if (req.method === 'GET') {
       
-      // --- UPDATE LOGIC GET_LIST (VERSI PERBAIKAN TOTAL) ---
-if (action === 'get_list') {
-    const result = await client.query(`
-        SELECT 
+      // 1. AMBIL DAFTAR PCB UNTUK HALAMAN UTAMA PACKING
+      if (action === 'get_list') {
+        const result = await client.query(`
+          SELECT 
             p.picklist_number, 
             p.nama_customer, 
             p.status,
-            COUNT(p.product_id)::int AS total_sku,
-            SUM(p.qty_pick)::int AS total_qty,
-            -- Kita bungkus semua baris p menjadi array JSON items
+            COUNT(DISTINCT p.product_id)::int AS total_sku,
+            SUM(p.qty_actual)::int AS total_pcs_picked, -- Menampilkan berapa yang sudah di-pick
             json_agg(
-                json_build_object(
-                    'product_id', p.product_id,
-                    'description', COALESCE(mp.description, p.product_id),
-                    'location_id', p.location_id,
-                    'qty_pick', p.qty_pick,
-                    'qty_actual', p.qty_actual,
-                    'sisa_qty', (p.qty_pick - p.qty_actual),
-                    'status', p.status
-                )
+              json_build_object(
+                'product_id', p.product_id,
+                'description', COALESCE(mp.description, p.product_id),
+                'location_id', p.location_id,
+                'qty_pick', p.qty_pick,
+                'qty_actual', p.qty_actual,
+                'status', p.status
+              )
             ) AS items
-        FROM picklist_raw p
-        LEFT JOIN master_product mp ON p.product_id = mp.product_id
-        WHERE LOWER(p.status) IN ('fully picked', 'partial picked')
-        GROUP BY p.picklist_number, p.nama_customer, p.status
-        ORDER BY p.picklist_number DESC
-    `);
+          FROM picklist_raw p
+          LEFT JOIN master_product mp ON p.product_id = mp.product_id
+          WHERE LOWER(p.status) IN ('fully picked', 'partial picked')
+          GROUP BY p.picklist_number, p.nama_customer, p.status
+          ORDER BY p.picklist_number DESC
+        `);
+        return res.status(200).json({ status: 'success', data: result.rows });
+      }
 
-    // Tambahkan log ini di console server Anda untuk memastikan 'items' tidak null
-    console.log("SAMPLE DATA:", JSON.stringify(result.rows[0]));
-
-    return res.status(200).json({ status: 'success', data: result.rows });
-}
-
-      // --- GET_INFO UNTUK PACKING (TIDAK BERUBAH LOGIKANYA, HANYA CLEANUP) ---
+      // 2. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
+      // LOGIKA: Kolom PICK mengambil qty_actual dari picker
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT 
             p.picklist_number, 
             p.nama_customer, 
             CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
-            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
+            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, -- Total yang diproses picker
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
             JSON_AGG(
               JSON_BUILD_OBJECT(
                 'product_id', p.product_id, 
                 'nama_item', COALESCE(mp.description, p.product_id),
-                'qty_pick', (
-                   SELECT CAST(SUM(qty_actual) AS INTEGER) 
-                   FROM picklist_raw 
-                   WHERE picklist_number = p.picklist_number AND product_id = p.product_id
-                ),
+                'qty_pick', p.qty_actual, -- Batas packing adalah hasil kerja picker (qty_actual)
                 'qty_packed_total', (
                    SELECT COALESCE(SUM(qty_packed), 0)::int 
                    FROM packing_transactions 
@@ -78,17 +69,19 @@ if (action === 'get_list') {
           GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
 
+        // Bersihkan duplikat hasil JSON_AGG
         if (result.rows[0] && result.rows[0].items) {
-            const seen = new Set();
-            result.rows[0].items = result.rows[0].items.filter(el => {
-                const duplicate = seen.has(el.product_id);
-                seen.add(el.product_id);
-                return !duplicate;
-            });
+          const seen = new Set();
+          result.rows[0].items = result.rows[0].items.filter(el => {
+            const duplicate = seen.has(el.product_id);
+            seen.add(el.product_id);
+            return !duplicate;
+          });
         }
         return res.status(200).json({ status: 'success', data: result.rows[0] });
       }
 
+      // 3. GENERATE NOMOR CONTAINER BERIKUTNYA
       if (action === 'get_next_container') {
         const result = await client.query(`
           SELECT COUNT(DISTINCT container_number) + 1 AS next_num 
@@ -98,14 +91,27 @@ if (action === 'get_list') {
         return res.status(200).json({ status: 'success', next_container_number: `${type}-${nextNum}` });
       }
 
+      // 4. AMBIL ISI LACI (DENGAN GROUPING SKU & HUID TUNGGAL)
       if (action === 'get_laci') {
+        // Ambil list item yang di-SUM per SKU agar tidak double baris
         const list = await client.query(`
-          SELECT pt.huid, pt.product_id, pt.qty_packed, COALESCE(mp.description, pt.product_id) as nama_item 
+          SELECT 
+            pt.product_id, 
+            SUM(pt.qty_packed)::int as qty_packed, 
+            COALESCE(mp.description, pt.product_id) as nama_item 
           FROM packing_transactions pt
           LEFT JOIN master_product mp ON pt.product_id = mp.product_id
           WHERE pt.picklist_number = $1 AND pt.container_number = $2
+          GROUP BY pt.product_id, mp.description
         `, [pcb, container]);
         
+        // Ambil HUID tunggal untuk container ini
+        const huidRes = await client.query(`
+          SELECT huid FROM packing_transactions 
+          WHERE picklist_number = $1 AND container_number = $2 
+          LIMIT 1
+        `, [pcb, container]);
+
         const total = await client.query(`
           SELECT SUM(qty_packed)::int as total 
           FROM packing_transactions 
@@ -114,6 +120,7 @@ if (action === 'get_list') {
         
         return res.status(200).json({ 
           status: 'success', 
+          huid: huidRes.rows.length > 0 ? huidRes.rows[0].huid : "-",
           container_info: { container_number: container, total_pcs: total.rows[0].total || 0 },
           packing_list: list.rows 
         });
@@ -121,26 +128,27 @@ if (action === 'get_list') {
     }
 
     if (req.method === 'POST') {
+      // 5. SIMPAN BARANG KE DALAM BOX (PACKING)
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
         
         const checkHuid = await client.query(
-            "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
-            [picklist_number, container_number]
+          "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
+          [picklist_number, container_number]
         );
 
         let huid;
         if (checkHuid.rows.length > 0) {
-            huid = checkHuid.rows[0].huid; 
+          huid = checkHuid.rows[0].huid; 
         } else {
-            const pcbSuffix = picklist_number.slice(-5);
-            const now = new Date();
-            const year = now.getFullYear().toString().slice(-2);
-            const day = now.getDate().toString().padStart(2, '0');
-            const month = (now.getMonth() + 1).toString().padStart(2, '0');
-            const datePart = `${year}${day}${month}`;
-            const randomPart = Math.floor(1000 + Math.random() * 9000); 
-            huid = `${pcbSuffix}${datePart}${randomPart}`;
+          const pcbSuffix = picklist_number.slice(-5);
+          const now = new Date();
+          const year = now.getFullYear().toString().slice(-2);
+          const day = now.getDate().toString().padStart(2, '0');
+          const month = (now.getMonth() + 1).toString().padStart(2, '0');
+          const datePart = `${year}${day}${month}`;
+          const randomPart = Math.floor(1000 + Math.random() * 9000); 
+          huid = `${pcbSuffix}${datePart}${randomPart}`;
         }
 
         await client.query(`
@@ -152,6 +160,7 @@ if (action === 'get_list') {
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
 
+      // 6. TUTUP BOX (INPUT BERAT)
       if (action === 'close_box') {
         const { pcb, container, weight_kg } = req.body;
         await client.query(`
@@ -164,7 +173,7 @@ if (action === 'get_list') {
     }
 
   } catch (err) {
-    console.error(err);
+    console.error("ERROR PACKING MASTER:", err);
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
