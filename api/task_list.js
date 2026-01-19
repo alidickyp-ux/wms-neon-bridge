@@ -26,45 +26,54 @@ module.exports = async (req, res) => {
         await client.query('BEGIN');
 
         // --- A. LOGIKA SHORTAGE (DARI PICKER) ---
-// --- A. LOGIKA SHORTAGE (DI DALAM task_list.js) ---
-if (action === 'mark_shortage') {
-  // qty_actual di sini adalah JUMLAH BARANG YANG DITEMUKAN picker (misal dapet 2 dari 10)
-  const inputQty = parseInt(qty_actual) || 0; 
-  const reason = inventory_reason || 'Barang Tidak Ada';
+        // UPDATE: Sekarang mendukung akumulasi (Normal + Shortage)
+        if (action === 'mark_shortage') {
+          const shortageFoundQty = parseInt(qty_actual) || 0; 
+          const reason = inventory_reason || 'Barang Tidak Ada';
 
-  const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
-  const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
+          // 1. Ambil qty yang sudah ada (hasil scan normal sebelumnya)
+          const currentData = await client.query(
+            `SELECT COALESCE(qty_actual, 0) as existing_qty FROM picklist_raw 
+             WHERE picklist_number = $1 AND product_id = $2 AND location_id = $3`,
+            [picklist_number, product_id, location_id]
+          );
 
-  // 1. UPDATE picklist_raw (INI KUNCINYA!)
-  // Kita harus set qty_actual sesuai yang ditemukan, dan status jadi 'fully picked' 
-  // agar header packing bisa menjumlahkan (SUM) angka ini.
-  await client.query(
-    `UPDATE picklist_raw 
-     SET qty_actual = $1, 
-         status = 'fully picked', 
-         picker_name = $2, 
-         updated_at = NOW() 
-     WHERE picklist_number = $3 AND product_id = $4 AND location_id = $5`,
-    [inputQty, picker_name, picklist_number, product_id, location_id]
-  );
+          const existingQty = currentData.rows.length > 0 ? currentData.rows[0].existing_qty : 0;
+          
+          // Total Akhir = Yang sudah discan normal + yang ditemukan pas shortage
+          const finalQtyActual = existingQty + shortageFoundQty;
 
-  // 2. INSERT ke picking_transactions (History)
-  await client.query(
-    `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
-     VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
-    [picklist_number, product_id, location_id, inputQty, picker_name, prodDesc, reason]
-  );
+          const resDesc = await client.query("SELECT description FROM master_product WHERE product_id = $1 LIMIT 1", [product_id]);
+          const prodDesc = resDesc.rows.length > 0 ? resDesc.rows[0].description : 'No Description';
 
-  // 3. INSERT ke picking_compliance (Untuk Admin)
-  await client.query(
-    `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
-     VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
-    [picklist_number, product_id, location_id, prodDesc, inputQty, `Shortage oleh ${picker_name}`, reason]
-  );
+          // 2. Update Raw dengan TOTAL AKUMULASI (Agar Header Packing Benar)
+          await client.query(
+            `UPDATE picklist_raw 
+             SET qty_actual = $1, 
+                 status = 'fully picked', 
+                 picker_name = $2, 
+                 updated_at = NOW() 
+             WHERE picklist_number = $3 AND product_id = $4 AND location_id = $5`,
+            [finalQtyActual, picker_name, picklist_number, product_id, location_id]
+          );
 
-  await client.query('COMMIT');
-  return res.status(200).json({ status: 'success' });
-}
+          // 3. Insert History
+          await client.query(
+            `INSERT INTO picking_transactions (picklist_number, product_id, location_id, qty_actual, picker_name, scanned_at, description, status, inventory_reason) 
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, 'SHORTAGE', $7)`,
+            [picklist_number, product_id, location_id, shortageFoundQty, picker_name, prodDesc, reason]
+          );
+
+          // 4. Masukkan ke Compliance (Hanya jumlah shortage-nya saja)
+          await client.query(
+            `INSERT INTO picking_compliance (picklist_number, product_id, location_id, description, qty_pick, keterangan, status_awal, status_akhir, inventory_reason) 
+             VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', 'WAITING', $7)`,
+            [picklist_number, product_id, location_id, prodDesc, shortageFoundQty, `Shortage oleh ${picker_name}`, reason]
+          );
+
+          await client.query('COMMIT');
+          return res.status(200).json({ status: 'success' });
+        }
 
         // --- B. LOGIKA UPDATE QTY NORMAL (SCAN BIASA) ---
         if (action === 'update_qty') {
@@ -76,13 +85,12 @@ if (action === 'mark_shortage') {
 
           if (checkRes.rows.length > 0) {
             const item = checkRes.rows[0];
-            const sisaBolehAmbil = item.qty_pick - item.current;
+            const newTotal = item.current + inputQty; 
 
-            if (inputQty > sisaBolehAmbil) {
-              throw new Error(`Qty melebihi request! Sisa yang boleh diambil: ${sisaBolehAmbil}`);
+            if (newTotal > item.qty_pick) {
+              throw new Error(`Qty melebihi request! Maksimal: ${item.qty_pick}`);
             }
 
-            const newTotal = item.current + inputQty;
             const newStatus = (newTotal >= item.qty_pick) ? 'fully picked' : 'partial picked';
 
             await client.query(
@@ -102,19 +110,15 @@ if (action === 'mark_shortage') {
           throw new Error("Item not found");
         }
 
-        // --- C. LOGIKA RESOLVE COMPLIANCE (DARI ADMIN / POPUP) ---
+        // --- C. LOGIKA RESOLVE COMPLIANCE (ADMIN) ---
         if (action === 'resolve_compliance') {
           if (!id) throw new Error("ID Compliance tidak ditemukan");
-          
           await client.query(
-            `UPDATE picking_compliance 
-             SET status_akhir = 'CLOSED', final_reason = $1, updated_at = NOW() 
-             WHERE id = $2`,
+            `UPDATE picking_compliance SET status_akhir = 'CLOSED', final_reason = $1, updated_at = NOW() WHERE id = $2`,
             [final_reason || 'Resolved', id]
           );
-
           await client.query('COMMIT');
-          return res.status(200).json({ status: 'success', message: 'Compliance Resolved' });
+          return res.status(200).json({ status: 'success' });
         }
 
       } catch (postErr) {
@@ -130,23 +134,15 @@ if (action === 'mark_shortage') {
     if (req.method === 'GET') {
       const { action, picklist_number } = req.query;
 
-      // JALUR GET COMPLIANCE: Tarik data WAITING + Join Nama Toko
       if (action === 'get_compliance') {
         const resComp = await client.query(`
-          SELECT 
-              c.*, 
-              p.nama_customer 
-          FROM picking_compliance c
-          LEFT JOIN (
-              SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw
-          ) p ON c.picklist_number = p.picklist_number
-          WHERE c.status_akhir = 'WAITING' 
-          ORDER BY c.created_at DESC
+          SELECT c.*, p.nama_customer FROM picking_compliance c
+          LEFT JOIN (SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw) p ON c.picklist_number = p.picklist_number
+          WHERE c.status_akhir = 'WAITING' ORDER BY c.created_at DESC
         `);
         return res.status(200).json({ status: 'success', data: resComp.rows });
       }
 
-      // JALUR GET PACKING
       if (action === 'get_packing') {
         const queryPacking = `
           SELECT p.picklist_number, p.nama_customer, p.status, 
@@ -166,7 +162,6 @@ if (action === 'mark_shortage') {
         return res.status(200).json({ status: 'success', data: resPack.rows });
       }
 
-      // JALUR GET DETAIL LOKASI
       if (picklist_number && action !== 'get_list') {
         const resDetail = await client.query(`
           SELECT pr.location_id, json_agg(json_build_object(
@@ -183,7 +178,6 @@ if (action === 'mark_shortage') {
         return res.status(200).json({ status: 'success', data: resDetail.rows });
       }
 
-      // JALUR GET LIST UTAMA PICKER
       const resList = await client.query(`
         SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_pick)::int AS total_qty,
         COALESCE((
