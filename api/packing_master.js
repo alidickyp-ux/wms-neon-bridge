@@ -23,7 +23,7 @@ module.exports = async (req, res) => {
     // ==========================================
     if (req.method === 'GET') {
       
-      // A. AMBIL DAFTAR PCB UNTUK HALAMAN UTAMA PACKING
+      // A. LIST KERJA (Hanya yang status Picking-nya sudah jalan/selesai)
       if (action === 'get_list') {
         const result = await client.query(`
           SELECT 
@@ -31,19 +31,8 @@ module.exports = async (req, res) => {
             p.nama_customer, 
             p.status,
             COUNT(DISTINCT p.product_id)::int AS total_sku,
-            SUM(p.qty_actual)::int AS total_pcs_picked,
-            json_agg(
-              json_build_object(
-                'product_id', p.product_id,
-                'description', COALESCE(mp.description, p.product_id),
-                'location_id', p.location_id,
-                'qty_pick', p.qty_pick,
-                'qty_actual', p.qty_actual,
-                'status', p.status
-              )
-            ) AS items
+            SUM(p.qty_actual)::int AS total_pcs_picked
           FROM picklist_raw p
-          LEFT JOIN master_product mp ON p.product_id = mp.product_id
           WHERE LOWER(p.status) IN ('fully picked', 'partial picked')
           GROUP BY p.picklist_number, p.nama_customer, p.status
           ORDER BY p.picklist_number DESC
@@ -51,7 +40,24 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: result.rows });
       }
 
-      // B. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
+      // B. BARU: LIST HISTORY (Untuk Menu RE-PRINT - Munculin semua yang pernah ada di transaksi packing)
+      if (action === 'get_history_list') {
+        const result = await client.query(`
+          SELECT 
+            pt.picklist_number, 
+            p.nama_customer, 
+            MAX(pt.status) as status_packing,
+            COUNT(DISTINCT pt.container_number)::int AS total_box,
+            SUM(pt.qty_packed)::int AS total_pcs_packed
+          FROM packing_transactions pt
+          JOIN picklist_raw p ON pt.picklist_number = p.picklist_number
+          GROUP BY pt.picklist_number, p.nama_customer
+          ORDER BY MAX(pt.huid) DESC -- Urutkan berdasarkan HUID terbaru
+        `);
+        return res.status(200).json({ status: 'success', data: result.rows });
+      }
+
+      // C. HEADER INFO DETAIL (REQ, PICK, PACK)
       if (action === 'get_info') {
         const result = await client.query(`
             SELECT 
@@ -82,12 +88,11 @@ module.exports = async (req, res) => {
             WHERE p.picklist_number = $1
             GROUP BY p.picklist_number, p.nama_customer
         `, [pcb]);
-
         if (result.rows.length === 0) return res.status(404).json({ status: 'error', message: 'Data tidak ditemukan' });
         return res.status(200).json({ status: 'success', data: result.rows[0] });
       }
 
-      // C. GENERATE NOMOR CONTAINER BERIKUTNYA
+      // D. GENERATE NOMOR WADAH
       if (action === 'get_next_container') {
         const result = await client.query(`
           SELECT COUNT(DISTINCT container_number) + 1 AS next_num 
@@ -97,13 +102,11 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', next_container_number: `${type}-${nextNum}` });
       }
 
-      // D. AMBIL ISI LACI (DENGAN GROUPING SKU & HUID TUNGGAL)
+      // E. ISI LACI (GROUP BY SKU)
       if (action === 'get_laci') {
         const list = await client.query(`
-          SELECT 
-            pt.product_id, 
-            SUM(pt.qty_packed)::int as qty_packed, 
-            COALESCE(mp.description, pt.product_id) as nama_item 
+          SELECT pt.product_id, SUM(pt.qty_packed)::int as qty_packed, 
+                 COALESCE(mp.description, pt.product_id) as nama_item 
           FROM packing_transactions pt
           LEFT JOIN master_product mp ON pt.product_id = mp.product_id
           WHERE pt.picklist_number = $1 AND pt.container_number = $2
@@ -111,32 +114,21 @@ module.exports = async (req, res) => {
         `, [pcb, container]);
         
         const huidRes = await client.query(`
-          SELECT huid FROM packing_transactions 
-          WHERE picklist_number = $1 AND container_number = $2 
-          LIMIT 1
+          SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1
         `, [pcb, container]);
 
-        const total = await client.query(`
-          SELECT SUM(qty_packed)::int as total 
-          FROM packing_transactions 
-          WHERE container_number = $1 AND picklist_number = $2
-        `, [container, pcb]);
-        
         return res.status(200).json({ 
           status: 'success', 
           huid: huidRes.rows.length > 0 ? huidRes.rows[0].huid : "-",
-          container_info: { container_number: container, total_pcs: total.rows[0].total || 0 },
           packing_list: list.rows 
         });
       }
 
-      // E. AMBIL DATA UNTUK RE-PRINT LABEL (GRUP PER BOX)
+      // F. DATA RE-PRINT LABEL
       if (action === 'get_print_data') {
         const result = await client.query(`
             SELECT 
-                container_number, 
-                huid, 
-                container_type,
+                container_number, huid, container_type,
                 CAST(weight_kg AS FLOAT) as weight_kg,
                 CAST(SUM(qty_packed) AS INTEGER) as total_pcs_box,
                 (
@@ -154,7 +146,6 @@ module.exports = async (req, res) => {
             GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
             ORDER BY pt.container_number ASC
         `, [pcb]);
-
         return res.status(200).json({ status: 'success', data: result.rows });
       }
     }
@@ -165,10 +156,9 @@ module.exports = async (req, res) => {
     if (req.method === 'POST') {
       const { action } = req.body;
 
-      // F. SIMPAN BARANG KE DALAM BOX (PACKING)
+      // G. SAVE ITEM
       if (action === 'save_item') {
         const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by } = req.body;
-        
         const checkHuid = await client.query(
           "SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1",
           [picklist_number, container_number]
@@ -180,29 +170,23 @@ module.exports = async (req, res) => {
         } else {
           const pcbSuffix = picklist_number.slice(-5);
           const now = new Date();
-          const year = now.getFullYear().toString().slice(-2);
-          const day = now.getDate().toString().padStart(2, '0');
-          const month = (now.getMonth() + 1).toString().padStart(2, '0');
-          const datePart = `${year}${day}${month}`;
-          const randomPart = Math.floor(1000 + Math.random() * 9000); 
-          huid = `${pcbSuffix}${datePart}${randomPart}`;
+          const datePart = `${now.getFullYear().toString().slice(-2)}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}`;
+          huid = `${pcbSuffix}${datePart}${Math.floor(1000 + Math.random() * 9000)}`;
         }
 
         await client.query(`
-          INSERT INTO packing_transactions 
-          (huid, picklist_number, product_id, qty_packed, container_number, box_number, container_type, scanned_by, status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
-        `, [huid, picklist_number, product_id, qty_packed, container_number, container_number, container_type, scanned_by]);
+          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'Packing')
+        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
 
         return res.status(200).json({ status: 'success', message: 'Item saved', huid: huid });
       }
 
-      // G. TUTUP BOX (INPUT BERAT)
+      // H. CLOSE BOX
       if (action === 'close_box') {
         const { pcb, container, weight_kg } = req.body;
         await client.query(`
-          UPDATE packing_transactions 
-          SET weight_kg = $1, status = 'Closed' 
+          UPDATE packing_transactions SET weight_kg = $1, status = 'Closed' 
           WHERE picklist_number = $2 AND container_number = $3
         `, [weight_kg, pcb, container]);
         return res.status(200).json({ status: 'success', message: 'Box Closed' });
@@ -210,7 +194,7 @@ module.exports = async (req, res) => {
     }
 
   } catch (err) {
-    console.error("ERROR PACKING MASTER:", err);
+    console.error(err);
     return res.status(500).json({ status: 'error', message: err.message });
   } finally {
     if (client) client.release();
