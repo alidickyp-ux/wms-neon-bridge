@@ -42,25 +42,27 @@ module.exports = async (req, res) => {
       }
 
       // 2. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
-// --- UPDATE LOGIKA GET_INFO DI DALAM packing_master.js ---
 
+// --- BAGIAN GET_INFO YANG SUDAH DI-FIX TOTAL ---
 if (action === 'get_info') {
     const result = await client.query(`
         SELECT 
             p.picklist_number, 
             p.nama_customer, 
+            -- REQ: Total permintaan awal
             CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
-            -- TOTAL PICK: Menghitung semua qty_actual (Normal + Shortage) dari semua lokasi
-            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
+            -- PICK: Menjumlahkan SEMUA qty_actual dari SEMUA baris (Normal & Shortage)
+            CAST(SUM(COALESCE(p.qty_actual, 0)) AS INTEGER) AS total_pick, 
+            -- PACK: Total yang sudah masuk box
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            -- ITEMS: Grouping per SKU agar total pick dari banyak lokasi jadi satu
+            -- ITEMS: Grouping per SKU untuk validasi di Android
             JSON_AGG(
                 JSON_BUILD_OBJECT(
                     'product_id', p.product_id, 
                     'nama_item', COALESCE(mp.description, p.product_id),
-                    -- QTY_PICK di sini kita isi dengan TOTAL ACTUAL dari semua lokasi SKU tersebut
+                    -- Batas Packing per SKU = Total qty_actual SKU tersebut di semua lokasi
                     'qty_pick', (
-                        SELECT CAST(SUM(qty_actual) AS INTEGER) 
+                        SELECT CAST(SUM(COALESCE(qty_actual, 0)) AS INTEGER) 
                         FROM picklist_raw 
                         WHERE picklist_number = p.picklist_number AND product_id = p.product_id
                     ),
@@ -77,13 +79,13 @@ if (action === 'get_info') {
         GROUP BY p.picklist_number, p.nama_customer
     `, [pcb]);
 
-    // Cleanup duplikat items agar Android hanya terima 1 baris per SKU
+    // Cleanup duplikat JSON_AGG agar Android tidak bingung
     if (result.rows[0] && result.rows[0].items) {
         const seen = new Set();
         result.rows[0].items = result.rows[0].items.filter(el => {
-            const duplicate = seen.has(el.product_id);
+            const isDuplicate = seen.has(el.product_id);
             seen.add(el.product_id);
-            return !duplicate;
+            return !isDuplicate;
         });
     }
     return res.status(200).json({ status: 'success', data: result.rows[0] });
