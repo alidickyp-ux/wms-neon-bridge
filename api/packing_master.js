@@ -42,44 +42,52 @@ module.exports = async (req, res) => {
       }
 
       // 2. AMBIL INFO DETAIL UNTUK HEADER EKSEKUSI (REQ, PICK, PACK)
-      // LOGIKA: Kolom PICK mengambil qty_actual dari picker
-      if (action === 'get_info') {
-        const result = await client.query(`
-          SELECT 
+// --- UPDATE LOGIKA GET_INFO DI DALAM packing_master.js ---
+
+if (action === 'get_info') {
+    const result = await client.query(`
+        SELECT 
             p.picklist_number, 
             p.nama_customer, 
             CAST(SUM(p.qty_pick) AS INTEGER) AS total_qty_req, 
-            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, -- Total yang diproses picker
+            -- TOTAL PICK: Menghitung semua qty_actual (Normal + Shortage) dari semua lokasi
+            CAST(SUM(p.qty_actual) AS INTEGER) AS total_pick, 
             (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
+            -- ITEMS: Grouping per SKU agar total pick dari banyak lokasi jadi satu
             JSON_AGG(
-              JSON_BUILD_OBJECT(
-                'product_id', p.product_id, 
-                'nama_item', COALESCE(mp.description, p.product_id),
-                'qty_pick', p.qty_actual, -- Batas packing adalah hasil kerja picker (qty_actual)
-                'qty_packed_total', (
-                   SELECT COALESCE(SUM(qty_packed), 0)::int 
-                   FROM packing_transactions 
-                   WHERE picklist_number = p.picklist_number AND product_id = p.product_id
+                JSON_BUILD_OBJECT(
+                    'product_id', p.product_id, 
+                    'nama_item', COALESCE(mp.description, p.product_id),
+                    -- QTY_PICK di sini kita isi dengan TOTAL ACTUAL dari semua lokasi SKU tersebut
+                    'qty_pick', (
+                        SELECT CAST(SUM(qty_actual) AS INTEGER) 
+                        FROM picklist_raw 
+                        WHERE picklist_number = p.picklist_number AND product_id = p.product_id
+                    ),
+                    'qty_packed_total', (
+                        SELECT COALESCE(SUM(qty_packed), 0)::int 
+                        FROM packing_transactions 
+                        WHERE picklist_number = p.picklist_number AND product_id = p.product_id
+                    )
                 )
-              )
             ) as items
-          FROM picklist_raw p 
-          LEFT JOIN master_product mp ON p.product_id = mp.product_id
-          WHERE p.picklist_number = $1
-          GROUP BY p.picklist_number, p.nama_customer
-        `, [pcb]);
+        FROM picklist_raw p 
+        LEFT JOIN master_product mp ON p.product_id = mp.product_id
+        WHERE p.picklist_number = $1
+        GROUP BY p.picklist_number, p.nama_customer
+    `, [pcb]);
 
-        // Bersihkan duplikat hasil JSON_AGG
-        if (result.rows[0] && result.rows[0].items) {
-          const seen = new Set();
-          result.rows[0].items = result.rows[0].items.filter(el => {
+    // Cleanup duplikat items agar Android hanya terima 1 baris per SKU
+    if (result.rows[0] && result.rows[0].items) {
+        const seen = new Set();
+        result.rows[0].items = result.rows[0].items.filter(el => {
             const duplicate = seen.has(el.product_id);
             seen.add(el.product_id);
             return !duplicate;
-          });
-        }
-        return res.status(200).json({ status: 'success', data: result.rows[0] });
-      }
+        });
+    }
+    return res.status(200).json({ status: 'success', data: result.rows[0] });
+}
 
       // 3. GENERATE NOMOR CONTAINER BERIKUTNYA
       if (action === 'get_next_container') {
