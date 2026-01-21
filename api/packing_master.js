@@ -53,38 +53,35 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows });
       }
 
-      // C. INFO HEADER & DAFTAR SKU (PENTING BUAT VALIDASI ARTIKEL)
-      if (action === 'get_info') {
-        const result = await client.query(`
+// Ganti bagian get_info lu dengan ini
+if (action === 'get_info') {
+  const result = await client.query(`
+    SELECT 
+      p.picklist_number, 
+      p.nama_customer, 
+      SUM(p.qty_pick)::int AS total_qty_req, 
+      SUM(p.qty_actual)::int AS total_pick, 
+      (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
+      (
+        SELECT json_agg(item_list) FROM (
           SELECT 
-            p.picklist_number, p.nama_customer, 
-            SUM(p.qty_pick)::int AS total_qty_req, 
-            SUM(p.qty_actual)::int AS total_pick, 
-            (SELECT COALESCE(SUM(qty_packed),0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-            (
-              SELECT json_agg(items) FROM (
-                SELECT sub.product_id, MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
-                SUM(sub.qty_actual)::int as qty_pick,
-                (SELECT COALESCE(SUM(qty_packed),0)::int FROM packing_transactions WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id) as qty_packed_total
-                FROM picklist_raw sub
-                LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-                WHERE sub.picklist_number = $1
-                GROUP BY sub.product_id, sub.picklist_number
-              ) items
-            ) as items
-          FROM picklist_raw p 
-          WHERE p.picklist_number = $1 
-          GROUP BY p.picklist_number, p.nama_customer
-        `, [pcb]);
-        return res.json({ status: 'success', data: result.rows[0] });
-      }
-
-      // D. GENERATE NOMOR WADAH
-      if (action === 'get_next_container') {
-        const result = await client.query(`SELECT COUNT(DISTINCT container_number) + 1 AS next_num FROM packing_transactions WHERE picklist_number = $1`, [pcb]);
-        const nextNum = String(result.rows[0].next_num).padStart(3, '0');
-        return res.json({ status: 'success', next_container_number: `${type}-${nextNum}` });
-      }
+            sub.product_id, 
+            MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
+            SUM(sub.qty_actual)::int as qty_pick,
+            (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions 
+             WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id) as qty_packed_total
+          FROM picklist_raw sub
+          LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+          WHERE sub.picklist_number = $1
+          GROUP BY sub.product_id, sub.picklist_number
+        ) item_list
+      ) as items
+    FROM picklist_raw p 
+    WHERE p.picklist_number = $1 
+    GROUP BY p.picklist_number, p.nama_customer
+  `, [pcb]);
+  return res.json({ status: 'success', data: result.rows[0] });
+}
 
       // E. ISI DALAM WADAH (LACI)
       if (action === 'get_laci') {
