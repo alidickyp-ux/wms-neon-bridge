@@ -120,18 +120,52 @@ if (action === 'get_laci') {
       }
 
       // F. DATA PRINT (RE-PRINT LABEL)
-      if (action === 'get_print_data') {
+if (action === 'get_print_data') {
         const result = await client.query(`
-          SELECT container_number, huid, container_type, COALESCE(CAST(weight_kg AS FLOAT), 0) as weight_kg,
-          CAST(SUM(qty_packed) AS INTEGER) as total_pcs_box,
-          (SELECT json_agg(json_build_object('product_id', sub.product_id, 'nama_item', COALESCE(mp.description, sub.product_id), 'qty', sub.qty_packed))
-           FROM packing_transactions sub LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-           WHERE sub.picklist_number = pt.picklist_number AND sub.container_number = pt.container_number) as item_details
-          FROM packing_transactions pt WHERE pt.picklist_number = $1
+          SELECT 
+            pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
+            (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1) as nama_toko,
+            COALESCE(CAST(pt.weight_kg AS FLOAT), 0) as weight_kg,
+            CAST(SUM(pt.qty_packed) AS INTEGER) as total_pcs_box,
+            (
+              SELECT json_agg(json_build_object(
+                'sku', sub.product_id, 
+                'desc', COALESCE(mp.description, sub.product_id), 
+                'qty', sub.qty_packed
+              ))
+              FROM packing_transactions sub 
+              LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+              WHERE sub.picklist_number = pt.picklist_number 
+                AND sub.container_number = pt.container_number
+            ) as item_details,
+            MAX(pt.scanned_by) as packer_name
+          FROM packing_transactions pt 
+          WHERE pt.picklist_number = $1
           GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
           ORDER BY pt.container_number ASC
         `, [pcb]);
-        return res.json({ status: 'success', data: result.rows });
+
+        // Tambahkan format teks QR untuk setiap box
+        const enrichedData = await Promise.all(result.rows.map(async (row) => {
+          // FORMAT QR SESUAI GAMBAR ANDA
+          const qrText = 
+            `BOX: ${row.huid} | ${row.nama_toko}\n` +
+            `PCB: ${row.picklist_number}\n` +
+            `--------------------------\n` +
+            `LIST ITEM:\n` +
+            row.item_details.map(i => `${i.sku} | ${i.desc} | ${i.qty} PCS`).join('\n') +
+            `\n--------------------------\n` +
+            `TOTAL  : ${row.total_pcs_box} PCS\n` +
+            `WEIGHT : ${row.weight_kg} KG\n` +
+            `PACKER : ${row.packer_name}`;
+
+          // Generate Base64 QR Image agar bisa langsung tampil di App/Web
+          const qrImageBase64 = await QRCode.toDataURL(qrText, { margin: 2, width: 400 });
+
+          return { ...row, qr_text_content: qrText, qr_code_image: qrImageBase64 };
+        }));
+
+        return res.json({ status: 'success', data: enrichedData });
       }
     }
 
