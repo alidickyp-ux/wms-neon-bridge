@@ -97,13 +97,13 @@ module.exports = async (req, res) => {
           COALESCE(mp.description, pt.product_id) AS nama_item 
           FROM packing_transactions pt 
           LEFT JOIN master_product mp ON pt.product_id = mp.product_id 
-          WHERE pt.picklist_number = $1 AND pt.container_number = $2 
+          WHERE pt.picklist_number = $1 AND (pt.container_number = $2 OR pt.box_number = $2) 
           GROUP BY pt.product_id, mp.description
         `, [pcb, container]);
         
         const huidRes = await client.query(`
           SELECT huid FROM packing_transactions 
-          WHERE picklist_number = $1 AND container_number = $2 
+          WHERE picklist_number = $1 AND (pt.container_number = $2 OR pt.box_number = $2)
           LIMIT 1
         `, [pcb, container]);
         
@@ -133,19 +133,44 @@ module.exports = async (req, res) => {
       const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, pcb: pcbPost, container: contPost, weight_kg } = req.body;
 
       // G. SAVE ITEM TO BOX
-      if (action === 'save_item') {
-        const huidCheck = await client.query(`SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, [picklist_number, container_number]);
+if (action === 'save_item') {
+        // 1. Cek HUID (Tetap satu box satu HUID)
+        const huidCheck = await client.query(
+          `SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, 
+          [picklist_number, container_number]
+        );
+        
         let huid = huidCheck.rows[0]?.huid;
         if (!huid) {
           const suffix = picklist_number.slice(-5);
           huid = `${suffix}${new Date().getTime().toString().slice(-8)}`;
         }
+
+        // 2. INSERT (Gue tambahin kolom box_number sesuai error lu)
         await client.query(`
-          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, status) 
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'Packing')
-        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
-        
-        return res.json({ status: 'success', message: 'Item saved', huid });
+          INSERT INTO packing_transactions (
+            huid, 
+            picklist_number, 
+            product_id, 
+            qty_packed, 
+            scanned_by, 
+            container_number, 
+            box_number, 
+            container_type, 
+            status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
+        `, [
+          huid,              // $1
+          picklist_number,   // $2
+          product_id,        // $3
+          qty_packed,        // $4
+          scanned_by,        // $5
+          container_number,  // $6 (Ini container_number)
+          container_number,  // $7 (Ini box_number - Kita isi sama biar gak null)
+          container_type     // $8
+        ]);
+
+        return res.json({ status: 'success', message: 'Item saved to box', huid });
       }
 
       // H. CLOSE BOX (SELESAI TIMBANG)
