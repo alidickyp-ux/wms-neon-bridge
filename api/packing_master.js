@@ -53,44 +53,64 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows });
       }
 
-// Ganti bagian get_info lu dengan ini
-if (action === 'get_info') {
-  const result = await client.query(`
-    SELECT 
-      p.picklist_number, 
-      p.nama_customer, 
-      SUM(p.qty_pick)::int AS total_qty_req, 
-      SUM(p.qty_actual)::int AS total_pick, 
-      (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
-      (
-        SELECT json_agg(item_list) FROM (
+      // C. INFO HEADER & DAFTAR SKU (MASTER VALIDASI)
+      if (action === 'get_info') {
+        const result = await client.query(`
           SELECT 
-            sub.product_id, 
-            MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
-            SUM(sub.qty_actual)::int as qty_pick,
-            (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions 
-             WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id) as qty_packed_total
-          FROM picklist_raw sub
-          LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-          WHERE sub.picklist_number = $1
-          GROUP BY sub.product_id, sub.picklist_number
-        ) item_list
-      ) as items
-    FROM picklist_raw p 
-    WHERE p.picklist_number = $1 
-    GROUP BY p.picklist_number, p.nama_customer
-  `, [pcb]);
-  return res.json({ status: 'success', data: result.rows[0] });
-}
+            p.picklist_number, p.nama_customer, 
+            SUM(p.qty_pick)::int AS total_qty_req, 
+            SUM(p.qty_actual)::int AS total_pick, 
+            (SELECT COALESCE(SUM(qty_packed),0)::int FROM packing_transactions WHERE picklist_number = $1) AS total_pack,
+            (
+              SELECT json_agg(item_list) FROM (
+                SELECT sub.product_id, MAX(COALESCE(mp.description, sub.product_id)) as nama_item,
+                SUM(sub.qty_actual)::int as qty_pick,
+                (SELECT COALESCE(SUM(qty_packed), 0)::int FROM packing_transactions 
+                 WHERE picklist_number = sub.picklist_number AND product_id = sub.product_id) as qty_packed_total
+                FROM picklist_raw sub
+                LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+                WHERE sub.picklist_number = $1
+                GROUP BY sub.product_id, sub.picklist_number
+              ) item_list
+            ) as items
+          FROM picklist_raw p WHERE p.picklist_number = $1 GROUP BY p.picklist_number, p.nama_customer
+        `, [pcb]);
+        return res.json({ status: 'success', data: result.rows[0] });
+      }
+
+      // D. AUTO-INCREMENT NOMOR WADAH
+      if (action === 'get_next_container') {
+        const result = await client.query(`
+          SELECT COUNT(DISTINCT container_number) as total 
+          FROM packing_transactions 
+          WHERE picklist_number = $1
+        `, [pcb]);
+        const nextNum = parseInt(result.rows[0].total) + 1;
+        const formattedNum = String(nextNum).padStart(3, '0');
+        return res.json({ status: 'success', next_container_number: `${type}-${formattedNum}` });
+      }
 
       // E. ISI DALAM WADAH (LACI)
       if (action === 'get_laci') {
-        const list = await client.query(`SELECT pt.product_id, SUM(pt.qty_packed)::int AS qty_packed, COALESCE(mp.description, pt.product_id) AS nama_item FROM packing_transactions pt LEFT JOIN master_product mp ON pt.product_id = mp.product_id WHERE pt.picklist_number = $1 AND pt.container_number = $2 GROUP BY pt.product_id, mp.description`, [pcb, container]);
-        const huidRes = await client.query(`SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, [pcb, container]);
+        const list = await client.query(`
+          SELECT pt.product_id, SUM(pt.qty_packed)::int AS qty_packed, 
+          COALESCE(mp.description, pt.product_id) AS nama_item 
+          FROM packing_transactions pt 
+          LEFT JOIN master_product mp ON pt.product_id = mp.product_id 
+          WHERE pt.picklist_number = $1 AND pt.container_number = $2 
+          GROUP BY pt.product_id, mp.description
+        `, [pcb, container]);
+        
+        const huidRes = await client.query(`
+          SELECT huid FROM packing_transactions 
+          WHERE picklist_number = $1 AND container_number = $2 
+          LIMIT 1
+        `, [pcb, container]);
+        
         return res.json({ status: 'success', huid: huidRes.rows[0]?.huid || '-', packing_list: list.rows });
       }
 
-      // F. DATA RE-PRINT
+      // F. DATA PRINT (RE-PRINT LABEL)
       if (action === 'get_print_data') {
         const result = await client.query(`
           SELECT container_number, huid, container_type, COALESCE(CAST(weight_kg AS FLOAT), 0) as weight_kg,
@@ -112,6 +132,7 @@ if (action === 'get_info') {
     if (req.method === 'POST') {
       const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, pcb: pcbPost, container: contPost, weight_kg } = req.body;
 
+      // G. SAVE ITEM TO BOX
       if (action === 'save_item') {
         const huidCheck = await client.query(`SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, [picklist_number, container_number]);
         let huid = huidCheck.rows[0]?.huid;
@@ -119,15 +140,22 @@ if (action === 'get_info') {
           const suffix = picklist_number.slice(-5);
           huid = `${suffix}${new Date().getTime().toString().slice(-8)}`;
         }
-        await client.query(`INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, status) VALUES ($1,$2,$3,$4,$5,$6,$7,'Packing')`, 
-        [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
+        await client.query(`
+          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, status) 
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'Packing')
+        `, [huid, picklist_number, product_id, qty_packed, container_number, container_type, scanned_by]);
+        
         return res.json({ status: 'success', message: 'Item saved', huid });
       }
 
+      // H. CLOSE BOX (SELESAI TIMBANG)
       if (action === 'close_box') {
         const finalPcb = pcbPost || picklist_number;
         const finalCont = contPost || container_number;
-        await client.query(`UPDATE packing_transactions SET status = 'Closed', weight_kg = $1 WHERE picklist_number = $2 AND container_number = $3`, [weight_kg, finalPcb, finalCont]);
+        await client.query(`
+          UPDATE packing_transactions SET status = 'Closed', weight_kg = $1 
+          WHERE picklist_number = $2 AND container_number = $3
+        `, [weight_kg, finalPcb, finalCont]);
         return res.json({ status: 'success', message: 'Box Closed' });
       }
     }
