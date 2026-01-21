@@ -1,5 +1,5 @@
 const { Pool } = require('pg');
-const QRCode = require('qrcode');
+const QRCode = require('qrcode'); // WAJIB: Pastikan sudah npm install qrcode
 
 const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL, 
@@ -55,7 +55,7 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows });
       }
 
-      // C. INFO HEADER & DAFTAR SKU (MASTER VALIDASI)
+      // C. INFO HEADER
       if (action === 'get_info') {
         const result = await client.query(`
           SELECT 
@@ -80,46 +80,26 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows[0] });
       }
 
-      // D. AUTO-INCREMENT NOMOR WADAH
+      // D. AUTO-INCREMENT WADAH
       if (action === 'get_next_container') {
-        const result = await client.query(`
-          SELECT COUNT(DISTINCT container_number) as total 
-          FROM packing_transactions 
-          WHERE picklist_number = $1
-        `, [pcb]);
+        const result = await client.query(`SELECT COUNT(DISTINCT container_number) as total FROM packing_transactions WHERE picklist_number = $1`, [pcb]);
         const nextNum = parseInt(result.rows[0].total) + 1;
         const formattedNum = String(nextNum).padStart(3, '0');
         return res.json({ status: 'success', next_container_number: `${type}-${formattedNum}` });
       }
 
-      // E. ISI DALAM WADAH (LACI)
+      // E. ISI LACI
       if (action === 'get_laci') {
         const list = await client.query(`
-          SELECT 
-            pt.product_id, 
-            SUM(pt.qty_packed)::int AS qty_packed, 
-            MAX(COALESCE(mp.description, pt.product_id)) AS nama_item 
-          FROM packing_transactions pt 
-          LEFT JOIN master_product mp ON pt.product_id = mp.product_id 
-          WHERE pt.picklist_number = $1 
-            AND (pt.container_number = $2 OR pt.box_number = $2) 
-          GROUP BY pt.product_id
+          SELECT pt.product_id, SUM(pt.qty_packed)::int AS qty_packed, MAX(COALESCE(mp.description, pt.product_id)) AS nama_item 
+          FROM packing_transactions pt LEFT JOIN master_product mp ON pt.product_id = mp.product_id 
+          WHERE pt.picklist_number = $1 AND (pt.container_number = $2 OR pt.box_number = $2) GROUP BY pt.product_id
         `, [pcb, container]);
-        
-        const huidRes = await client.query(`
-          SELECT huid FROM packing_transactions 
-          WHERE picklist_number = $1 AND (container_number = $2 OR box_number = $2)
-          LIMIT 1
-        `, [pcb, container]);
-        
-        return res.json({ 
-          status: 'success', 
-          huid: huidRes.rows[0]?.huid || '-', 
-          packing_list: list.rows 
-        });
+        const huidRes = await client.query(`SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND (container_number = $2 OR box_number = $2) LIMIT 1`, [pcb, container]);
+        return res.json({ status: 'success', huid: huidRes.rows[0]?.huid || '-', packing_list: list.rows });
       }
 
-      // F. DATA PRINT (RE-PRINT LABEL DENGAN QR)
+// F. DATA PRINT (QR HANYA BERISI HUID)
       if (action === 'get_print_data') {
         const result = await client.query(`
           SELECT 
@@ -129,7 +109,7 @@ module.exports = async (req, res) => {
             CAST(SUM(pt.qty_packed) AS INTEGER) as total_pcs_box,
             (
               SELECT json_agg(json_build_object(
-                'sku', sub.product_id, 
+                'product_id', sub.product_id, 
                 'nama_item', COALESCE(mp.description, sub.product_id), 
                 'qty', sub.qty_packed
               ))
@@ -145,18 +125,14 @@ module.exports = async (req, res) => {
           ORDER BY pt.container_number ASC
         `, [pcb]);
 
+        // Generate QR Code: HANYA ISI HUID
         const enrichedData = await Promise.all(result.rows.map(async (row) => {
-          const qrContent = 
-            `BOX: ${row.container_number} | ${row.huid} | ${row.nama_toko}\n` +
-            `PCB: ${row.picklist_number}\n` +
-            `--------------------------\n` +
-            `ITEMS:\n` +
-            row.item_details.map(i => `- ${i.sku} | ${i.qty}`).join('\n') +
-            `\n--------------------------\n` +
-            `TOTAL: ${row.total_pcs_box} | WG: ${row.weight_kg}kg\n` +
-            `PACKER: ${row.packer_name}`;
-
-          const qrImage = await QRCode.toDataURL(qrContent, { margin: 2, width: 400 });
+          // Hanya generate HUID ke dalam QR
+          const qrImage = await QRCode.toDataURL(row.huid, { 
+            margin: 2, 
+            width: 400,
+            errorCorrectionLevel: 'M' 
+          });
 
           return { 
             ...row, 
@@ -166,45 +142,29 @@ module.exports = async (req, res) => {
 
         return res.json({ status: 'success', data: enrichedData });
       }
-    }
 
     // ==========================================
-    // 3. LOGIKA POST (SIMPAN DATA)
+    // 3. LOGIKA POST (G, H Sesuai Kode Acuan)
     // ==========================================
     if (req.method === 'POST') {
-      const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, pcb: pcbPost, container: contPost, weight_kg } = req.body;
+      const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, weight_kg, pcb: pcbPost, container: contPost } = req.body;
 
-      // G. SAVE ITEM TO BOX
       if (action === 'save_item') {
-        const huidCheck = await client.query(
-          `SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, 
-          [picklist_number, container_number]
-        );
-        
-        let huid = huidCheck.rows[0]?.huid;
-        if (!huid) {
-          const suffix = picklist_number.slice(-5);
-          huid = `${suffix}${new Date().getTime().toString().slice(-8)}`;
-        }
+        const huidCheck = await client.query(`SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, [picklist_number, container_number]);
+        let huid = huidCheck.rows[0]?.huid || `${picklist_number.slice(-5)}${Date.now().toString().slice(-8)}`;
 
         await client.query(`
-          INSERT INTO packing_transactions (
-            huid, picklist_number, product_id, qty_packed, scanned_by, 
-            container_number, box_number, container_type, status
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
+          INSERT INTO packing_transactions (huid, picklist_number, product_id, qty_packed, scanned_by, container_number, box_number, container_type, status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
         `, [huid, picklist_number, product_id, qty_packed, scanned_by, container_number, container_number, container_type]);
 
         return res.json({ status: 'success', message: 'Item saved to box', huid });
       }
 
-      // H. CLOSE BOX (SELESAI TIMBANG)
       if (action === 'close_box') {
         const finalPcb = pcbPost || picklist_number;
         const finalCont = contPost || container_number;
-        await client.query(`
-          UPDATE packing_transactions SET status = 'Closed', weight_kg = $1 
-          WHERE picklist_number = $2 AND container_number = $3
-        `, [weight_kg, finalPcb, finalCont]);
+        await client.query(`UPDATE packing_transactions SET status = 'Closed', weight_kg = $1 WHERE picklist_number = $2 AND container_number = $3`, [weight_kg, finalPcb, finalCont]);
         return res.json({ status: 'success', message: 'Box Closed' });
       }
     }
