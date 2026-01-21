@@ -45,20 +45,28 @@ module.exports = async (req, res) => {
       }
 
       // B. HISTORY RE-PRINT
-      if (action === 'get_history_list') {
-        const result = await client.query(`
-          SELECT 
-            pt.picklist_number, p.nama_customer, MAX(pt.status) AS status_packing,
-            COUNT(DISTINCT pt.container_number)::int AS total_box,
-            SUM(pt.qty_packed)::int AS total_pcs_packed
-          FROM packing_transactions pt
-          JOIN (SELECT DISTINCT picklist_number, nama_customer FROM picklist_raw) p 
-            ON pt.picklist_number = p.picklist_number
-          GROUP BY pt.picklist_number, p.nama_customer
-          ORDER BY pt.picklist_number DESC
-        `);
-        return res.json({ status: 'success', data: result.rows });
-      }
+// B. HISTORY RE-PRINT
+if (action === 'get_history_list') {
+  const result = await client.query(`
+    SELECT 
+      pt.picklist_number,
+      p.nama_customer,
+      MAX(pt.status) AS status_packing,
+      COUNT(DISTINCT pt.container_number)::int AS total_box,
+      SUM(pt.qty_packed)::int AS total_pcs_packed,
+      -- TAMBAHKAN BARIS DI BAWAH INI --
+      SUM(COALESCE(pt.weight_kg, 0))::float AS total_weight 
+    FROM packing_transactions pt
+    JOIN (
+      SELECT DISTINCT picklist_number, nama_customer 
+      FROM picklist_raw
+    ) p ON pt.picklist_number = p.picklist_number
+    GROUP BY pt.picklist_number, p.nama_customer
+    ORDER BY pt.picklist_number DESC
+  `);
+
+  return res.json({ status: 'success', data: result.rows });
+}
 
       // C. HEADER INFO (Detail untuk Packing Activity)
       if (action === 'get_info') {
