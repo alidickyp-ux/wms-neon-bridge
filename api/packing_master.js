@@ -164,41 +164,48 @@ module.exports = async (req, res) => {
       }
 
       // F. PRINT DATA + QR
-      if (action === 'get_print_data') {
-        const result = await client.query(`
+// F. PRINT DATA + QR (Update bagian ini di backend)
+if (action === 'get_print_data') {
+  const result = await client.query(`
+    SELECT 
+      pt.container_number,
+      pt.huid,
+      pt.container_type,
+      pt.picklist_number,
+      (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1) AS nama_toko,
+      COALESCE(pt.weight_kg, 0)::float AS weight_kg,
+      SUM(pt.qty_packed)::int AS total_pcs_box,
+      MAX(pt.scanned_by) AS packer_name,
+      (
+        SELECT json_agg(items)
+        FROM (
           SELECT 
-            pt.container_number,
-            pt.huid,
-            pt.container_type,
-            pt.picklist_number,
-            (
-              SELECT nama_customer 
-              FROM picklist_raw 
-              WHERE picklist_number = pt.picklist_number
-              LIMIT 1
-            ) AS nama_toko,
-            COALESCE(pt.weight_kg, 0)::float AS weight_kg,
-            SUM(pt.qty_packed)::int AS total_pcs_box,
-            MAX(pt.scanned_by) AS packer_name
-          FROM packing_transactions pt
-          WHERE pt.picklist_number = $1
-          GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
-          ORDER BY pt.container_number
-        `, [pcb]);
+            sub.product_id AS sku, 
+            MAX(COALESCE(mp.description, sub.product_id)) AS nama_item,
+            SUM(sub.qty_packed)::int AS qty
+          FROM packing_transactions sub
+          LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+          WHERE sub.picklist_number = pt.picklist_number 
+            AND sub.container_number = pt.container_number
+          GROUP BY sub.product_id
+        ) items
+      ) AS item_details
+    FROM packing_transactions pt
+    WHERE pt.picklist_number = $1
+    GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
+    ORDER BY pt.container_number
+  `, [pcb]);
 
-        const enriched = await Promise.all(
-          result.rows.map(async (row) => {
-            const qr = await QRCode.toDataURL(row.huid, {
-              width: 400,
-              margin: 2
-            });
-            return { ...row, qr_code_image: qr };
-          })
-        );
+  const enriched = await Promise.all(
+    result.rows.map(async (row) => {
+      const qr = await QRCode.toDataURL(row.huid, { width: 400, margin: 2 });
+      return { ...row, qr_code_image: qr };
+    })
+  );
 
-        return res.json({ status: 'success', data: enriched });
-      }
-    } // ⬅️ GET CLOSED
+  return res.json({ status: 'success', data: enriched });
+}
+      // ⬅️ GET CLOSED
 
     // ===============================
     // 3. POST
