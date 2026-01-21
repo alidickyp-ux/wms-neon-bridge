@@ -1,5 +1,5 @@
 const { Pool } = require('pg');
-const QRCode = require('qrcode'); // Pastikan sudah npm install qrcode
+const QRCode = require('qrcode');
 
 const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL, 
@@ -20,8 +20,10 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
+    // ==========================================
+    // 2. LOGIKA GET (AMBIL DATA)
+    // ==========================================
     if (req.method === 'GET') {
-      // Kita buat fleksibel: bisa terima 'pcb' atau 'picklist_number'
       const pcb = req.query.pcb || req.query.picklist_number; 
       const { type, container } = req.query;
 
@@ -91,9 +93,7 @@ module.exports = async (req, res) => {
       }
 
       // E. ISI DALAM WADAH (LACI)
-if (action === 'get_laci') {
-        const { pcb, container } = req.query; // Pastikan ambil dari query
-        
+      if (action === 'get_laci') {
         const list = await client.query(`
           SELECT 
             pt.product_id, 
@@ -119,7 +119,7 @@ if (action === 'get_laci') {
         });
       }
 
-      // F. DATA PRINT (RE-PRINT LABEL)
+      // F. DATA PRINT (RE-PRINT LABEL DENGAN QR)
       if (action === 'get_print_data') {
         const result = await client.query(`
           SELECT 
@@ -145,7 +145,6 @@ if (action === 'get_laci') {
           ORDER BY pt.container_number ASC
         `, [pcb]);
 
-        // Tambahkan proses pembuatan QR Base64
         const enrichedData = await Promise.all(result.rows.map(async (row) => {
           const qrContent = 
             `BOX: ${row.container_number} | ${row.huid} | ${row.nama_toko}\n` +
@@ -161,7 +160,7 @@ if (action === 'get_laci') {
 
           return { 
             ...row, 
-            qr_code_image: qrImage // Ini yang akan dikonsumsi ImageView Android
+            qr_code_image: qrImage 
           };
         }));
 
@@ -170,29 +169,13 @@ if (action === 'get_laci') {
     }
 
     // ==========================================
-    // 3. LOGIKA POST (G, H Tetap sama dengan kode stabil Anda)
-    // ==========================================
-    if (req.method === 'POST') {
-       // ... (Gunakan kode POST yang Anda berikan di atas tanpa perubahan) ...
-    }
-
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ status: 'error', message: err.message });
-  } finally {
-    if (client) client.release();
-  }
-};
-
-    // ==========================================
     // 3. LOGIKA POST (SIMPAN DATA)
     // ==========================================
     if (req.method === 'POST') {
       const { picklist_number, product_id, qty_packed, container_number, container_type, scanned_by, pcb: pcbPost, container: contPost, weight_kg } = req.body;
 
       // G. SAVE ITEM TO BOX
-if (action === 'save_item') {
-        // 1. Cek HUID (Tetap satu box satu HUID)
+      if (action === 'save_item') {
         const huidCheck = await client.query(
           `SELECT huid FROM packing_transactions WHERE picklist_number = $1 AND container_number = $2 LIMIT 1`, 
           [picklist_number, container_number]
@@ -204,29 +187,12 @@ if (action === 'save_item') {
           huid = `${suffix}${new Date().getTime().toString().slice(-8)}`;
         }
 
-        // 2. INSERT (Gue tambahin kolom box_number sesuai error lu)
         await client.query(`
           INSERT INTO packing_transactions (
-            huid, 
-            picklist_number, 
-            product_id, 
-            qty_packed, 
-            scanned_by, 
-            container_number, 
-            box_number, 
-            container_type, 
-            status
+            huid, picklist_number, product_id, qty_packed, scanned_by, 
+            container_number, box_number, container_type, status
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Packing')
-        `, [
-          huid,              // $1
-          picklist_number,   // $2
-          product_id,        // $3
-          qty_packed,        // $4
-          scanned_by,        // $5
-          container_number,  // $6 (Ini container_number)
-          container_number,  // $7 (Ini box_number - Kita isi sama biar gak null)
-          container_type     // $8
-        ]);
+        `, [huid, picklist_number, product_id, qty_packed, scanned_by, container_number, container_number, container_type]);
 
         return res.json({ status: 'success', message: 'Item saved to box', huid });
       }
