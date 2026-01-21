@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const QRCode = require('qrcode'); // Pastikan sudah npm install qrcode
 
 const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL, 
@@ -19,11 +20,10 @@ module.exports = async (req, res) => {
   try {
     client = await pool.connect();
 
-    // ==========================================
-    // 2. LOGIKA GET (AMBIL DATA)
-    // ==========================================
     if (req.method === 'GET') {
-      const { pcb, type, container } = req.query;
+      // Kita buat fleksibel: bisa terima 'pcb' atau 'picklist_number'
+      const pcb = req.query.pcb || req.query.picklist_number; 
+      const { type, container } = req.query;
 
       // A. LIST KERJA PACKING
       if (action === 'get_list') {
@@ -120,7 +120,7 @@ if (action === 'get_laci') {
       }
 
       // F. DATA PRINT (RE-PRINT LABEL)
-if (action === 'get_print_data') {
+      if (action === 'get_print_data') {
         const result = await client.query(`
           SELECT 
             pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
@@ -130,7 +130,7 @@ if (action === 'get_print_data') {
             (
               SELECT json_agg(json_build_object(
                 'sku', sub.product_id, 
-                'desc', COALESCE(mp.description, sub.product_id), 
+                'nama_item', COALESCE(mp.description, sub.product_id), 
                 'qty', sub.qty_packed
               ))
               FROM packing_transactions sub 
@@ -145,29 +145,44 @@ if (action === 'get_print_data') {
           ORDER BY pt.container_number ASC
         `, [pcb]);
 
-        // Tambahkan format teks QR untuk setiap box
+        // Tambahkan proses pembuatan QR Base64
         const enrichedData = await Promise.all(result.rows.map(async (row) => {
-          // FORMAT QR SESUAI GAMBAR ANDA
-          const qrText = 
-            `BOX: ${row.huid} | ${row.nama_toko}\n` +
+          const qrContent = 
+            `BOX: ${row.container_number} | ${row.huid} | ${row.nama_toko}\n` +
             `PCB: ${row.picklist_number}\n` +
             `--------------------------\n` +
-            `LIST ITEM:\n` +
-            row.item_details.map(i => `${i.sku} | ${i.desc} | ${i.qty} PCS`).join('\n') +
+            `ITEMS:\n` +
+            row.item_details.map(i => `- ${i.sku} | ${i.qty}`).join('\n') +
             `\n--------------------------\n` +
-            `TOTAL  : ${row.total_pcs_box} PCS\n` +
-            `WEIGHT : ${row.weight_kg} KG\n` +
-            `PACKER : ${row.packer_name}`;
+            `TOTAL: ${row.total_pcs_box} | WG: ${row.weight_kg}kg\n` +
+            `PACKER: ${row.packer_name}`;
 
-          // Generate Base64 QR Image agar bisa langsung tampil di App/Web
-          const qrImageBase64 = await QRCode.toDataURL(qrText, { margin: 2, width: 400 });
+          const qrImage = await QRCode.toDataURL(qrContent, { margin: 2, width: 400 });
 
-          return { ...row, qr_text_content: qrText, qr_code_image: qrImageBase64 };
+          return { 
+            ...row, 
+            qr_code_image: qrImage // Ini yang akan dikonsumsi ImageView Android
+          };
         }));
 
         return res.json({ status: 'success', data: enrichedData });
       }
     }
+
+    // ==========================================
+    // 3. LOGIKA POST (G, H Tetap sama dengan kode stabil Anda)
+    // ==========================================
+    if (req.method === 'POST') {
+       // ... (Gunakan kode POST yang Anda berikan di atas tanpa perubahan) ...
+    }
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ status: 'error', message: err.message });
+  } finally {
+    if (client) client.release();
+  }
+};
 
     // ==========================================
     // 3. LOGIKA POST (SIMPAN DATA)
