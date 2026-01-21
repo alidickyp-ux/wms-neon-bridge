@@ -91,23 +91,32 @@ module.exports = async (req, res) => {
       }
 
       // E. ISI DALAM WADAH (LACI)
-      if (action === 'get_laci') {
+if (action === 'get_laci') {
+        const { pcb, container } = req.query; // Pastikan ambil dari query
+        
         const list = await client.query(`
-          SELECT pt.product_id, SUM(pt.qty_packed)::int AS qty_packed, 
-          COALESCE(mp.description, pt.product_id) AS nama_item 
+          SELECT 
+            pt.product_id, 
+            SUM(pt.qty_packed)::int AS qty_packed, 
+            MAX(COALESCE(mp.description, pt.product_id)) AS nama_item 
           FROM packing_transactions pt 
           LEFT JOIN master_product mp ON pt.product_id = mp.product_id 
-          WHERE pt.picklist_number = $1 AND (pt.container_number = $2 OR pt.box_number = $2) 
-          GROUP BY pt.product_id, mp.description
+          WHERE pt.picklist_number = $1 
+            AND (pt.container_number = $2 OR pt.box_number = $2) 
+          GROUP BY pt.product_id
         `, [pcb, container]);
         
         const huidRes = await client.query(`
           SELECT huid FROM packing_transactions 
-          WHERE picklist_number = $1 AND (pt.container_number = $2 OR pt.box_number = $2)
+          WHERE picklist_number = $1 AND (container_number = $2 OR box_number = $2)
           LIMIT 1
         `, [pcb, container]);
         
-        return res.json({ status: 'success', huid: huidRes.rows[0]?.huid || '-', packing_list: list.rows });
+        return res.json({ 
+          status: 'success', 
+          huid: huidRes.rows[0]?.huid || '-', 
+          packing_list: list.rows 
+        });
       }
 
       // F. DATA PRINT (RE-PRINT LABEL)
