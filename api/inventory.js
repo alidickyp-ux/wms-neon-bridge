@@ -42,25 +42,34 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success' });
     }
 
-    // --- 3. ACTION: UPLOAD SNAPSHOT ---
-    if (action === 'upload_snap' && req.method === 'POST') {
-      const { data } = req.body;
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query('TRUNCATE TABLE inventory_snap');
-        for (const item of data) {
-          await client.query(
-            'INSERT INTO inventory_snap (location_id, artikel, qty_snap) VALUES ($1, $2, $3)',
-            [String(item.location_id), String(item.artikel), parseInt(item.qty_snap) || 0]
-          );
-        }
-        await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-        await client.query('COMMIT');
-        return res.status(200).json({ status: 'success' });
-      } catch (e) { await client.query('ROLLBACK'); throw e; }
-      finally { client.release(); }
+// --- 3 ACTION: UPLOAD SNAPSHOT (DENGAN AUTO-SUM) ---
+if (action === 'upload_snap' && req.method === 'POST') {
+  const { data } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('TRUNCATE TABLE inventory_snap');
+    
+    for (const item of data) {
+      await client.query(
+        `INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
+         VALUES ($1, $2, $3)
+         ON CONFLICT (location_id, artikel) 
+         DO UPDATE SET qty_snap = inventory_snap.qty_snap + EXCLUDED.qty_snap`, 
+        [
+          String(item.location_id), 
+          String(item.artikel), 
+          parseInt(item.qty_snap) || 0
+        ]
+      );
     }
+    
+    await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+    await client.query('COMMIT');
+    return res.status(200).json({ status: 'success' });
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
+}
 
     // --- 4. ACTION: CLEAR SNAP (TRUNCATE) ---
     if (action === 'clear_snap' && req.method === 'POST') {
