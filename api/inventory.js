@@ -63,3 +63,25 @@ export default async function handler(req, res) {
     return res.status(500).json({ status: 'error', message: error.message });
   }
 }
+
+// ... (Bagian atas pool tetap sama)
+
+    // --- ACTION: CLEAR SNAP (TRUNCATE) ---
+    if (action === 'clear_snap' && req.method === 'POST') {
+      try {
+        await pool.query('TRUNCATE TABLE inventory_snap');
+        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+        // Jika view_snapshot_list juga materialized, tambahkan refresh di sini
+        try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
+        return res.status(200).json({ status: 'success', message: 'Data Snapshot dibersihkan' });
+      } catch (error) { throw error; }
+    }
+
+    // --- ACTION: REFRESH VIEW ---
+    if (action === 'refresh_view' && req.method === 'POST') {
+      try {
+        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+        try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
+        return res.status(200).json({ status: 'success', message: 'View berhasil diperbarui' });
+      } catch (error) { throw error; }
+    }
