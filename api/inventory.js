@@ -21,26 +21,25 @@ export default async function handler(req, res) {
     if (req.method === 'GET' && action === 'get_data') {
       let sql = '';
       if (target === 'master') {
-        // AMBIL unique_id juga agar Toggle tidak salah sasaran!
-        sql = 'SELECT DISTINCT ON (location_id) unique_id, location_id, assign FROM master_lokasi ORDER BY location_id ASC';
+        // AMBIL SEMUA unique_id. Tidak pakai DISTINCT ON agar tidak ada data yang hilang di dashboard
+        sql = 'SELECT unique_id, location_id, assign FROM master_lokasi ORDER BY location_id ASC, unique_id ASC';
       } else if (target === 'snapshot_list') {
         sql = 'SELECT * FROM view_snapshot_list ORDER BY location_id ASC';
       } else if (target === 'recon') {
         sql = 'SELECT * FROM inventory_reconciliation ORDER BY location_id ASC';
-      } else if (target === 'first') {
-        sql = 'SELECT * FROM inventory_first ORDER BY timestamp DESC';
-      } else if (target === 'second') {
-        sql = 'SELECT * FROM inventory_second ORDER BY timestamp DESC';
+      } else {
+        // Default untuk first dan second count
+        sql = `SELECT * FROM inventory_${target === 'first' ? 'first' : 'second'} ORDER BY timestamp DESC`;
       }
 
       const result = await pool.query(sql);
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-    // --- ASSIGN LOKASI (FOKUS KE UNIQUE_ID) ---
+    // --- ASSIGN LOKASI (PASTIKAN WHERE UNIQUE_ID) ---
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
-      // UPDATE BERDASARKAN unique_id (BUKAN location_id)
+      // WAJIB nembak unique_id (Primary Key)
       await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
       
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
