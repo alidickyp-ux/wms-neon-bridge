@@ -17,30 +17,32 @@ export default async function handler(req, res) {
   const { action, target } = req.query;
 
   try {
+    // --- 1. ACTION: GET DATA ---
     if (req.method === 'GET' && action === 'get_data') {
       let sql = '';
       if (target === 'master') {
-        // FOKUS: Ambil unique_id (1A-1) dan jadikan DISTINCT agar grid ringkas
         sql = 'SELECT DISTINCT ON (unique_id) unique_id, assign FROM master_lokasi ORDER BY unique_id ASC';
+      } else if (target === 'snapshot_list') {
+        // Mengambil data snapshot list
+        sql = 'SELECT * FROM view_snapshot_list ORDER BY location_id ASC';
       } else if (target === 'recon') {
         sql = 'SELECT * FROM inventory_reconciliation ORDER BY location_id ASC';
       } else {
         sql = `SELECT * FROM inventory_${target === 'first' ? 'first' : 'second'} ORDER BY timestamp DESC`;
       }
-
       const result = await pool.query(sql);
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
+    // --- 2. ACTION: ASSIGN LOKASI ---
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
-      // Update semua baris yang punya unique_id (1A-1) yang sama
       await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.status(200).json({ status: 'success' });
     }
 
-    // --- UPLOAD SNAPSHOT ---
+    // --- 3. ACTION: UPLOAD SNAPSHOT ---
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
       const client = await pool.connect();
@@ -59,29 +61,24 @@ export default async function handler(req, res) {
       } catch (e) { await client.query('ROLLBACK'); throw e; }
       finally { client.release(); }
     }
+
+    // --- 4. ACTION: CLEAR SNAP (TRUNCATE) ---
+    if (action === 'clear_snap' && req.method === 'POST') {
+      await pool.query('TRUNCATE TABLE inventory_snap');
+      await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+      try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
+      return res.status(200).json({ status: 'success', message: 'Data Snapshot dibersihkan' });
+    }
+
+    // --- 5. ACTION: REFRESH VIEW ---
+    if (action === 'refresh_view' && req.method === 'POST') {
+      await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+      try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
+      return res.status(200).json({ status: 'success', message: 'View berhasil diperbarui' });
+    }
+
   } catch (error) {
+    console.error("ERROR_LOG:", error.message);
     return res.status(500).json({ status: 'error', message: error.message });
   }
 }
-
-// ... (Bagian atas pool tetap sama)
-
-    // --- ACTION: CLEAR SNAP (TRUNCATE) ---
-    if (action === 'clear_snap' && req.method === 'POST') {
-      try {
-        await pool.query('TRUNCATE TABLE inventory_snap');
-        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-        // Jika view_snapshot_list juga materialized, tambahkan refresh di sini
-        try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
-        return res.status(200).json({ status: 'success', message: 'Data Snapshot dibersihkan' });
-      } catch (error) { throw error; }
-    }
-
-    // --- ACTION: REFRESH VIEW ---
-    if (action === 'refresh_view' && req.method === 'POST') {
-      try {
-        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-        try { await pool.query('REFRESH MATERIALIZED VIEW view_snapshot_list'); } catch(e) {}
-        return res.status(200).json({ status: 'success', message: 'View berhasil diperbarui' });
-      } catch (error) { throw error; }
-    }
