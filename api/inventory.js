@@ -22,7 +22,7 @@ export default async function handler(req, res) {
       let sql = '';
       if (target === 'master') {
         // AMBIL SEMUA unique_id. Tidak pakai DISTINCT ON agar tidak ada data yang hilang di dashboard
-        sql = 'SELECT unique_id, location_id, assign FROM master_lokasi ORDER BY location_id ASC, unique_id ASC';
+        sql = 'SELECT unique_id, assign FROM master_lokasi ORDER unique_id ASC';
       } else if (target === 'snapshot_list') {
         sql = 'SELECT * FROM view_snapshot_list ORDER BY location_id ASC';
       } else if (target === 'recon') {
