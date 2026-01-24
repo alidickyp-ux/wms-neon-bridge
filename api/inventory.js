@@ -17,18 +17,14 @@ export default async function handler(req, res) {
   const { action, target } = req.query;
 
   try {
-    // --- GET DATA ---
     if (req.method === 'GET' && action === 'get_data') {
       let sql = '';
       if (target === 'master') {
-        // AMBIL SEMUA unique_id. Tidak pakai DISTINCT ON agar tidak ada data yang hilang di dashboard
-        sql = 'SELECT unique_id, assign FROM master_lokasi ORDER unique_id ASC';
-      } else if (target === 'snapshot_list') {
-        sql = 'SELECT * FROM view_snapshot_list ORDER BY location_id ASC';
+        // FOKUS: Ambil unique_id (1A-1) dan jadikan DISTINCT agar grid ringkas
+        sql = 'SELECT DISTINCT ON (unique_id) unique_id, assign FROM master_lokasi ORDER BY unique_id ASC';
       } else if (target === 'recon') {
         sql = 'SELECT * FROM inventory_reconciliation ORDER BY location_id ASC';
       } else {
-        // Default untuk first dan second count
         sql = `SELECT * FROM inventory_${target === 'first' ? 'first' : 'second'} ORDER BY timestamp DESC`;
       }
 
@@ -36,12 +32,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-    // --- ASSIGN LOKASI (PASTIKAN WHERE UNIQUE_ID) ---
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
-      // WAJIB nembak unique_id (Primary Key)
+      // Update semua baris yang punya unique_id (1A-1) yang sama
       await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
-      
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.status(200).json({ status: 'success' });
     }
