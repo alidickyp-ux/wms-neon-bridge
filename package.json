@@ -1,9 +1,16 @@
-"dependencies": {
-  "@neondatabase/serverless": "^0.10.4",
-  "ws": "^8.18.0",
-  "pg": "^8.11.0",
-  "qrcode": "^1.5.4",
-  "axios": "^1.6.0",
-  "xlsx": "^0.18.5",
-  "lucide-react": "^0.300.0"
+{
+  "name": "wms-neon-bridge",
+  "version": "1.0.0",
+  "main": "api/inventory.js",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "ws": "^8.18.0",
+    "pg": "^8.11.0",
+    "qrcode": "^1.5.4",
+    "axios": "^1.6.0",
+    "xlsx": "^0.18.5",
+    "lucide-react": "^0.300.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
 }
