@@ -25,6 +25,14 @@ const { action, target } = req.query;
       } else if (target === 'recon') {
         sql = 'SELECT * FROM inventory_reconciliation';
       }
+      // Di dalam inventory.js bagian GET
+if (target === 'master') {
+  sql = 'SELECT DISTINCT ON (location_id) location_id, assign FROM master_lokasi ORDER BY location_id ASC';
+} else if (target === 'snapshot_list') {
+  sql = 'SELECT * FROM view_snapshot_list ORDER BY location_id ASC';
+} else if (target === 'recon') {
+  sql = 'SELECT * FROM inventory_reconciliation ORDER BY location_id ASC';
+}
       
       const result = await pool.query(sql);
       return res.status(200).json({ status: 'success', data: result.rows });
