@@ -46,7 +46,7 @@ export default async function handler(req, res) {
       const { unique_id, status } = req.body; // unique_id di sini adalah location_id dari frontend
       
       // Update status di master_lokasi
-      await pool.query('UPDATE master_lokasi SET assign = $1 WHERE location_id = $2', [status, unique_id]);
+      await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
       
       // Refresh View Rekonsiliasi
       try {
