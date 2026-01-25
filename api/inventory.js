@@ -34,20 +34,16 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-    // --- 2. ACTION: SAVE INPUT (DARI HP) ---
+    // --- 2. ACTION: SAVE INPUT ---
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
-      
       let table = '';
       let colName = ''; 
 
-      // Logic penentuan tabel dan nama kolom di Neon
       if (target_table.includes('1st')) {
-        table = 'inventory_first';
-        colName = 'qty_1st'; 
+        table = 'inventory_first'; colName = 'qty_1st'; 
       } else if (target_table.includes('2n')) {
-        table = 'inventory_second';
-        colName = 'qty_2nd'; 
+        table = 'inventory_second'; colName = 'qty_2nd'; 
       } else {
         return res.status(400).json({ status: 'error', message: 'Target tabel tidak valid' });
       }
@@ -60,13 +56,7 @@ export default async function handler(req, res) {
       `;
       
       await pool.query(sql, [location_id, artikel, qty, operator]);
-      
-      // Refresh view agar dashboard PC sinkron
-      try { 
-        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); 
-      } catch (e) {
-        console.error("View Refresh Failed:", e.message);
-      }
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       
       return res.status(200).json({ status: 'success', message: `Berhasil simpan ke ${table}` });
     }
@@ -87,18 +77,26 @@ export default async function handler(req, res) {
             [String(item.location_id), String(item.artikel), parseInt(item.qty_snap) || 0]
           );
         }
-        await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
+        try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
         await client.query('COMMIT');
         return res.status(200).json({ status: 'success' });
       } catch (e) { await client.query('ROLLBACK'); throw e; }
       finally { client.release(); }
     }
 
-    // --- 4. ACTION: CLEAR SNAP ---
-    if (action === 'clear_snap' && req.method === 'POST') {
-      await pool.query('TRUNCATE TABLE inventory_snap');
+    // --- 4. ACTION: CLEAR DATA (SNAP, 1ST, 2ND) ---
+    if (req.method === 'POST') {
+      if (action === 'clear_snap') {
+        await pool.query('TRUNCATE TABLE inventory_snap');
+      } else if (action === 'clear_first') {
+        await pool.query('DELETE FROM inventory_first');
+      } else if (action === 'clear_second') {
+        await pool.query('DELETE FROM inventory_second');
+      }
+
+      // Setiap kali hapus data, refresh view reconciliation
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
-      return res.status(200).json({ status: 'success', message: 'Snapshot dibersihkan' });
+      return res.status(200).json({ status: 'success', message: 'Data cleared' });
     }
 
     // --- 5. ACTION: REFRESH VIEW ---
@@ -106,17 +104,6 @@ export default async function handler(req, res) {
       await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
       return res.status(200).json({ status: 'success', message: 'View diperbarui' });
     }
-
-// Tambahkan ini di backend Vercel Bos (api/inventory.js)
-if (action === 'clear_first') {
-  await pool.query('DELETE FROM inventory_first');
-  return res.json({ status: 'success' });
-}
-
-if (action === 'clear_second') {
-  await pool.query('DELETE FROM inventory_second');
-  return res.json({ status: 'success' });
-}
 
     // --- 6. ACTION: ASSIGN LOKASI ---
     if (action === 'assign_location' && req.method === 'POST') {
