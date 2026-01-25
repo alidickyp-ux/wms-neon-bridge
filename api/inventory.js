@@ -38,16 +38,32 @@ export default async function handler(req, res) {
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
       
-      // LOGIC FIX: Menyesuaikan string dari frontend ke nama tabel database
-      // Kita pakai .includes agar lebih aman dari typo huruf 't' atau 'd'
       let table = '';
+      let colName = ''; // Kita buat dinamis sesuai tabel
+
       if (target_table.includes('1st')) {
         table = 'inventory_first';
-      } else if (target_table.includes('2n')) { // Menangkap '2nt' atau '2nd'
+        colName = 'qty_1st'; // SESUAI NEON BOS
+      } else if (target_table.includes('2n')) {
         table = 'inventory_second';
+        colName = 'qty_2nd'; // SESUAI NEON BOS
       } else {
         return res.status(400).json({ status: 'error', message: 'Target tabel tidak valid' });
       }
+      
+      // Update perintah SQL agar pakai colName yang benar
+      const sql = `
+        INSERT INTO ${table} (location_id, artikel, ${colName}, operator, timestamp)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (location_id, artikel)
+        DO UPDATE SET ${colName} = EXCLUDED.${colName}, timestamp = NOW()
+      `;
+      
+      await pool.query(sql, [location_id, artikel, qty, operator]);
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+      
+      return res.status(200).json({ status: 'success', message: `Berhasil simpan ke ${table}` });
+    }
       
       const sql = `
         INSERT INTO ${table} (location_id, artikel, qty, operator, timestamp)
