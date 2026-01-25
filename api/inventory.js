@@ -34,10 +34,20 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-    // --- 2. ACTION: SAVE INPUT (DARI HP) ---
+// --- 2. ACTION: SAVE INPUT (DARI HP) ---
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
-      const table = target_table === '1st Count' ? 'inventory_first' : 'inventory_second';
+      
+      // LOGIC FIX: Menyesuaikan string dari frontend ke nama tabel database
+      // Kita pakai .includes agar lebih aman dari typo huruf 't' atau 'd'
+      let table = '';
+      if (target_table.includes('1st')) {
+        table = 'inventory_first';
+      } else if (target_table.includes('2n')) { // Menangkap '2nt' atau '2nd'
+        table = 'inventory_second';
+      } else {
+        return res.status(400).json({ status: 'error', message: 'Target tabel tidak valid' });
+      }
       
       const sql = `
         INSERT INTO ${table} (location_id, artikel, qty, operator, timestamp)
@@ -45,9 +55,17 @@ export default async function handler(req, res) {
         ON CONFLICT (location_id, artikel)
         DO UPDATE SET qty = EXCLUDED.qty, timestamp = NOW()
       `;
+      
       await pool.query(sql, [location_id, artikel, qty, operator]);
-      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
-      return res.status(200).json({ status: 'success', message: 'Data Tersimpan' });
+      
+      // Refresh view agar hasil recon di dashboard PC langsung berubah
+      try { 
+        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); 
+      } catch (e) {
+        console.error("View Refresh Failed:", e.message);
+      }
+      
+      return res.status(200).json({ status: 'success', message: `Berhasil simpan ke ${table}` });
     }
 
     // --- 3. ACTION: UPLOAD SNAPSHOT ---
