@@ -107,6 +107,17 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', message: 'View diperbarui' });
     }
 
+// Tambahkan ini di backend Vercel Bos (api/inventory.js)
+if (action === 'clear_first') {
+  await pool.query('DELETE FROM inventory_first');
+  return res.json({ status: 'success' });
+}
+
+if (action === 'clear_second') {
+  await pool.query('DELETE FROM inventory_second');
+  return res.json({ status: 'success' });
+}
+
     // --- 6. ACTION: ASSIGN LOKASI ---
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
