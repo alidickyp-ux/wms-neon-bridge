@@ -1,4 +1,4 @@
-  import { Pool, neonConfig } from '@neondatabase/serverless';
+import { Pool, neonConfig } from '@neondatabase/serverless';
 import ws from 'ws';
 
 neonConfig.webSocketConstructor = ws;
@@ -34,24 +34,24 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', data: result.rows });
     }
 
-// --- 2. ACTION: SAVE INPUT (DARI HP) ---
+    // --- 2. ACTION: SAVE INPUT (DARI HP) ---
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
       
       let table = '';
-      let colName = ''; // Kita buat dinamis sesuai tabel
+      let colName = ''; 
 
+      // Logic penentuan tabel dan nama kolom di Neon
       if (target_table.includes('1st')) {
         table = 'inventory_first';
-        colName = 'qty_1st'; // SESUAI NEON BOS
+        colName = 'qty_1st'; 
       } else if (target_table.includes('2n')) {
         table = 'inventory_second';
-        colName = 'qty_2nd'; // SESUAI NEON BOS
+        colName = 'qty_2nd'; 
       } else {
         return res.status(400).json({ status: 'error', message: 'Target tabel tidak valid' });
       }
       
-      // Update perintah SQL agar pakai colName yang benar
       const sql = `
         INSERT INTO ${table} (location_id, artikel, ${colName}, operator, timestamp)
         VALUES ($1, $2, $3, $4, NOW())
@@ -60,21 +60,8 @@ export default async function handler(req, res) {
       `;
       
       await pool.query(sql, [location_id, artikel, qty, operator]);
-      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       
-      return res.status(200).json({ status: 'success', message: `Berhasil simpan ke ${table}` });
-    }
-      
-      const sql = `
-        INSERT INTO ${table} (location_id, artikel, qty, operator, timestamp)
-        VALUES ($1, $2, $3, $4, NOW())
-        ON CONFLICT (location_id, artikel)
-        DO UPDATE SET qty = EXCLUDED.qty, timestamp = NOW()
-      `;
-      
-      await pool.query(sql, [location_id, artikel, qty, operator]);
-      
-      // Refresh view agar hasil recon di dashboard PC langsung berubah
+      // Refresh view agar dashboard PC sinkron
       try { 
         await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); 
       } catch (e) {
@@ -107,14 +94,14 @@ export default async function handler(req, res) {
       finally { client.release(); }
     }
 
-    // --- 4. ACTION: CLEAR SNAP (YANG ANDA CARI) ---
+    // --- 4. ACTION: CLEAR SNAP ---
     if (action === 'clear_snap' && req.method === 'POST') {
       await pool.query('TRUNCATE TABLE inventory_snap');
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.status(200).json({ status: 'success', message: 'Snapshot dibersihkan' });
     }
 
-    // --- 5. ACTION: REFRESH VIEW (YANG ANDA CARI JUMLAH) ---
+    // --- 5. ACTION: REFRESH VIEW ---
     if (action === 'refresh_view' && req.method === 'POST') {
       await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
       return res.status(200).json({ status: 'success', message: 'View diperbarui' });
