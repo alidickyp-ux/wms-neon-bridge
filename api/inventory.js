@@ -72,6 +72,7 @@ export default async function handler(req, res) {
     }
 
 // --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE) ---
+// --- 4. ACTION: UPLOAD SNAPSHOT (FIXED DUPLICATE IN FILE) ---
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
       if (!data || !Array.isArray(data)) {
@@ -83,12 +84,8 @@ export default async function handler(req, res) {
         await client.query('BEGIN');
         await client.query('TRUNCATE TABLE inventory_snap');
         
-        // Buat query Batch Insert
-        // ($1, $2, $3), ($4, $5, $6), dst...
-        const values = [];
-        const placeholders = [];
-        let counter = 1;
-
+        // --- PROSES MERINGKAS DATA DUPLIKAT DI FILE EXCEL ---
+        const summaryMap = {};
         for (const item of data) {
           const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
           const art = String(item.artikel || item.ARTICLE || '').trim().toUpperCase();
@@ -96,12 +93,27 @@ export default async function handler(req, res) {
 
           if (!loc || !art) continue;
 
-          values.push(loc, art, qty);
-          placeholders.push(`($${counter}, $${counter + 1}, $${counter + 2})`);
-          counter += 3;
+          const key = `${loc}|${art}`;
+          if (summaryMap[key]) {
+            summaryMap[key].qty += qty; // Jika duplikat di file, tambahkan Qty-nya
+          } else {
+            summaryMap[key] = { loc, art, qty };
+          }
         }
 
-        if (values.length > 0) {
+        // --- BATCH INSERT DATA YANG SUDAH RINGKAS ---
+        const finalValues = Object.values(summaryMap);
+        if (finalValues.length > 0) {
+          const values = [];
+          const placeholders = [];
+          let counter = 1;
+
+          for (const item of finalValues) {
+            values.push(item.loc, item.art, item.qty);
+            placeholders.push(`($${counter}, $${counter + 1}, $${counter + 2})`);
+            counter += 3;
+          }
+
           const batchSql = `
             INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
             VALUES ${placeholders.join(', ')}
@@ -113,10 +125,10 @@ export default async function handler(req, res) {
         
         try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
         await client.query('COMMIT');
-        return res.status(200).json({ status: 'success', total: data.length });
+        return res.status(200).json({ status: 'success', total: finalValues.length });
       } catch (e) { 
         await client.query('ROLLBACK'); 
-        console.error("BATCH_UPLOAD_ERROR:", e.message);
+        console.error("FIXED_BATCH_ERROR:", e.message);
         return res.status(500).json({ status: 'error', message: e.message });
       } finally { client.release(); }
     }
