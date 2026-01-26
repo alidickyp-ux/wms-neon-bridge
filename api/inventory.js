@@ -72,38 +72,41 @@ export default async function handler(req, res) {
     }
 
     // ================= 3. UPLOAD SNAPSHOT (Sesuai Struktur Poin 4) =================
+// --- 4. ACTION: UPLOAD SNAPSHOT (Anti-Error) ---
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
-      if (!Array.isArray(data)) return res.status(400).json({ error: 'INVALID DATA' });
+      if (!data || !Array.isArray(data)) {
+        return res.status(400).json({ status: 'error', message: 'Data tidak valid' });
+      }
 
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE TABLE inventory_snap'); // Bersihkan snap lama
+        await client.query('TRUNCATE TABLE inventory_snap');
+        
+        for (const item of data) {
+          // Cari kolom lokasi & artikel meskipun namanya beda-beda di Excel
+          const loc = String(item.location_id || item.LOCATION || item.Lokasi || '').trim().toUpperCase();
+          const art = String(item.artikel || item.ARTICLE || item.Artikel || '').trim().toUpperCase();
+          const qty = parseInt(item.qty_snap || item.QTY || item.Qty || 0);
 
-        for (const r of data) {
-          const loc = String(r.LOCATION || r.location_id || '').trim().toUpperCase();
-          const art = String(r.ARTICLE || r.artikel || '').trim().toUpperCase();
-          const qty = parseInt(r.QTY || r.qty_snap || 0);
-
-          if (!loc || !art) continue;
+          if (!loc || !art) continue; // Skip jika baris kosong
 
           await client.query(
-            `INSERT INTO inventory_snap (location_id, artikel, qty_snap)
+            `INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
              VALUES ($1, $2, $3)
-             ON CONFLICT (location_id, artikel) DO UPDATE SET qty_snap = EXCLUDED.qty_snap`,
+             ON CONFLICT (location_id, artikel) 
+             DO UPDATE SET qty_snap = EXCLUDED.qty_snap`,
             [loc, art, qty]
           );
         }
-
-        // Jalankan Refresh View agar Recon terupdate
-        try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
         
+        try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
         await client.query('COMMIT');
-        return res.json({ status: 'success' });
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
+        return res.status(200).json({ status: 'success', total: data.length });
+      } catch (e) { 
+        await client.query('ROLLBACK'); 
+        return res.status(500).json({ status: 'error', message: e.message });
       } finally { client.release(); }
     }
 
