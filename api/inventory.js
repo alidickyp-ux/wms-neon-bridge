@@ -22,9 +22,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { action, target } = req.query;
 
@@ -37,52 +35,41 @@ export default async function handler(req, res) {
       const { username, password } = req.body;
 
       if (!username || !password) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Username & password required'
-        });
+        return res.status(400).json({ status: 'error', message: 'Username & password required' });
       }
 
       const result = await pool.query(
-        `
-        SELECT id, username, full_name, role
-        FROM operators
-        WHERE username = $1 AND password = $2
-        `,
+        `SELECT id, username, full_name, role
+         FROM operators
+         WHERE username = $1 AND password = $2`,
         [username, password]
       );
 
       if (result.rows.length === 0) {
-        return res.status(401).json({
-          status: 'error',
-          message: 'Username / password salah'
-        });
+        return res.status(401).json({ status: 'error', message: 'Username / password salah' });
       }
 
-      return res.status(200).json({
-        status: 'success',
-        user: result.rows[0]
-      });
+      return res.status(200).json({ status: 'success', user: result.rows[0] });
     }
 
     /* ======================================================
        2️⃣ GET DATA
     ====================================================== */
     if (req.method === 'GET' && action === 'get_data') {
-
       let sql = '';
 
-      /* ---------- MASTER LOKASI ---------- */
+      /* ---------- MASTER LOKASI (GROUP BY unique_id) ---------- */
       if (target === 'master') {
         sql = `
           SELECT
-            location_id,
-            zone,
-            aisle,
             unique_id,
-            COALESCE(assign, 'closed') AS assign
+            CASE
+              WHEN BOOL_AND(assign = 'open') THEN 'open'
+              ELSE 'closed'
+            END AS assign
           FROM master_lokasi
-          ORDER BY zone, aisle, location_id
+          GROUP BY unique_id
+          ORDER BY unique_id
         `;
       }
 
@@ -97,87 +84,55 @@ export default async function handler(req, res) {
 
       /* ---------- 1ST COUNT ---------- */
       else if (target === 'first') {
-        sql = `
-          SELECT *
-          FROM inventory_first
-          ORDER BY timestamp DESC
-        `;
+        sql = `SELECT * FROM inventory_first ORDER BY timestamp DESC`;
       }
 
       /* ---------- 2ND COUNT ---------- */
       else if (target === 'second') {
-        sql = `
-          SELECT *
-          FROM inventory_second
-          ORDER BY timestamp DESC
-        `;
+        sql = `SELECT * FROM inventory_second ORDER BY timestamp DESC`;
       }
 
       /* ---------- RECON ---------- */
       else if (target === 'recon') {
-        sql = `
-          SELECT *
-          FROM inventory_reconciliation
-          ORDER BY location_id
-        `;
+        sql = `SELECT * FROM inventory_reconciliation ORDER BY location_id`;
       }
 
       else {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Invalid target'
-        });
+        return res.status(400).json({ status: 'error', message: 'Invalid target' });
       }
 
       const result = await pool.query(sql);
-
-      return res.status(200).json({
-        status: 'success',
-        data: result.rows || []
-      });
+      return res.status(200).json({ status: 'success', data: result.rows });
     }
 
     /* ======================================================
-       3️⃣ TOGGLE ASSIGN LOKASI (OPEN / CLOSED)
-       Berdasarkan unique_id (boleh dobel)
+       3️⃣ TOGGLE ASSIGN (PER unique_id)
     ====================================================== */
     if (req.method === 'POST' && action === 'assign_location') {
       const { unique_id, status } = req.body;
 
       if (!unique_id || !['open', 'closed'].includes(status)) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Invalid unique_id or status'
-        });
+        return res.status(400).json({ status: 'error', message: 'Invalid data' });
       }
 
-      const result = await pool.query(
-        `
-        UPDATE master_lokasi
-        SET assign = $1
-        WHERE unique_id = $2
-        RETURNING unique_id, assign
-        `,
+      await pool.query(
+        `UPDATE master_lokasi
+         SET assign = $1
+         WHERE unique_id = $2`,
         [status, unique_id]
       );
 
-      return res.status(200).json({
-        status: 'success',
-        updated_rows: result.rows.length
-      });
+      return res.status(200).json({ status: 'success' });
     }
 
     /* ======================================================
-       4️⃣ SAVE INPUT (1ST & 2ND COUNT)
+       4️⃣ SAVE INPUT (1ST / 2ND COUNT)
     ====================================================== */
     if (req.method === 'POST' && action === 'save_input') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
 
       if (!location_id || !artikel || qty === undefined) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Incomplete data'
-        });
+        return res.status(400).json({ status: 'error', message: 'Incomplete data' });
       }
 
       const isFirst = String(target_table).includes('1st');
@@ -202,50 +157,49 @@ export default async function handler(req, res) {
         operator || 'SYSTEM'
       ]);
 
-      try {
-        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-      } catch (_) {}
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (_) {}
 
       return res.status(200).json({ status: 'success' });
     }
 
     /* ======================================================
-       5️⃣ UPLOAD SNAPSHOT
+       5️⃣ UPLOAD SNAPSHOT (UPSERT + NO FAIL)
     ====================================================== */
     if (req.method === 'POST' && action === 'upload_snap') {
       const { data } = req.body;
-
       if (!Array.isArray(data)) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Invalid snapshot data'
-        });
+        return res.status(400).json({ status: 'error', message: 'Invalid snapshot data' });
       }
 
       const client = await pool.connect();
 
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE TABLE inventory_snap');
 
-        for (const item of data) {
+        for (const row of data) {
           await client.query(
             `
-            INSERT INTO inventory_snap (location_id, artikel, qty_snap)
-            VALUES ($1, $2, $3)
+            INSERT INTO inventory_snap
+              (location_id, artikel, qty_snap, description)
+            SELECT
+              $1, $2, $3, mp.description
+            FROM master_product mp
+            WHERE mp.artikel = $2
+            ON CONFLICT (location_id, artikel)
+            DO UPDATE SET
+              qty_snap = EXCLUDED.qty_snap,
+              description = EXCLUDED.description,
+              created_at = CURRENT_TIMESTAMP
             `,
             [
-              String(item.location_id || ''),
-              String(item.artikel || ''),
-              parseInt(item.qty_snap) || 0
+              String(row.location_id || ''),
+              String(row.artikel || ''),
+              parseInt(row.qty_snap) || 0
             ]
           );
         }
 
-        try {
-          await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-        } catch (_) {}
-
+        try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (_) {}
         await client.query('COMMIT');
 
         return res.status(200).json({ status: 'success' });
@@ -268,26 +222,15 @@ export default async function handler(req, res) {
         'inventory_second';
 
       await pool.query(`TRUNCATE TABLE ${table}`);
-
-      try {
-        await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation');
-      } catch (_) {}
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (_) {}
 
       return res.status(200).json({ status: 'success' });
     }
 
-    /* ======================================================
-       FALLBACK
-    ====================================================== */
-    return res.status(400).json({
-      status: 'error',
-      message: 'Invalid action'
-    });
+    return res.status(400).json({ status: 'error', message: 'Invalid action' });
 
   } catch (error) {
     console.error('API_ERROR:', error.message);
-
-    // ❗️ANTI CRASH RESPONSE
     return res.status(200).json({
       status: 'error',
       message: 'Database error (handled)',
