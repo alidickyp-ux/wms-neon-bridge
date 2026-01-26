@@ -11,165 +11,138 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-async function warmup() {
-  await pool.query('SELECT 1');
-}
-
 export default async function handler(req, res) {
-  // ================= NO CACHE =================
+  // --- Header No Cache & CORS ---
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // ================= CORS =================
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { action } = req.query;
+  const { action, target } = req.query;
 
   try {
-    await warmup();
+    // ================= 1. LOGIN (Sesuai Tabel operators) =================
+    if (action === 'login' && req.method === 'POST') {
+      const { username, password } = req.body || {};
 
-    // ================= LOGIN =================// ================= LOGIN =================
-if (action === 'login' && req.method === 'POST') {
-  const { username, password } = req.body || {};
+      if (!username || !password) {
+        return res.status(400).json({ status: 'failed', message: 'ISI USER & PASS' });
+      }
 
-  if (!username || !password) {
-    return res.status(400).json({
-      status: 'failed',
-      message: 'USERNAME / PASSWORD KOSONG',
-    });
-  }
+      // Sesuaikan query dengan kolom full_name (bukan name)
+      const { rows } = await pool.query(
+        `SELECT username, full_name, role FROM operators 
+         WHERE username = $1 AND password = $2`,
+        [username.trim(), password.trim()]
+      );
 
-  const { rows } = await pool.query(
-    `
-    SELECT username, name, role
-    FROM operators
-    WHERE username = $1
-      AND password = $2
-      AND status = 'active'
-    `,
-    [username.trim(), password.trim()]
-  );
+      if (rows.length === 0) {
+        return res.status(401).json({ status: 'failed', message: 'LOGIN GAGAL' });
+      }
 
-  if (rows.length === 0) {
-    return res.status(401).json({
-      status: 'failed',
-      message: 'LOGIN GAGAL',
-    });
-  }
+      return res.status(200).json({ status: 'success', user: rows[0] });
+    }
 
-  return res.status(200).json({
-    status: 'success',
-    user: rows[0],
-  });
-}
-
-
-    // ================= GET DATA =================
+    // ================= 2. GET DATA (Sesuai Tabel Inventory) =================
     if (action === 'get_data' && req.method === 'GET') {
       const map = {
-        master: `SELECT * FROM master_lokasi ORDER BY unique_id`,
-        snapshot_list: `SELECT * FROM snapshot`,
-        first: `SELECT * FROM count_1st`,
-        second: `SELECT * FROM count_2nd`,
-        recon: `
-          SELECT location_id, artikel, qty_snap, qty_1st, qty_2nd, final_status
-          FROM reconciliation_view
-        `,
+        master: `SELECT unique_id, assign, location_id FROM master_lokasi ORDER BY location_id ASC`,
+        snapshot_list: `SELECT location_id, artikel, qty_snap FROM inventory_snap ORDER BY location_id ASC`,
+        first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
+        second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
+        recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
       };
 
-      const sql = map[req.query.target];
+      const sql = map[target];
       if (!sql) return res.json({ data: [] });
 
       const { rows } = await pool.query(sql);
-      return res.json({ data: rows });
+      return res.json({ status: 'success', data: rows });
     }
 
-    // ================= UPLOAD SNAPSHOT =================
+    // ================= 3. UPLOAD SNAPSHOT (Sesuai Struktur Poin 4) =================
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
-      if (!Array.isArray(data)) {
-        return res.status(400).json({ error: 'INVALID DATA' });
-      }
+      if (!Array.isArray(data)) return res.status(400).json({ error: 'INVALID DATA' });
 
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        await client.query('TRUNCATE TABLE inventory_snap'); // Bersihkan snap lama
 
         for (const r of data) {
           const loc = String(r.LOCATION || r.location_id || '').trim().toUpperCase();
           const art = String(r.ARTICLE || r.artikel || '').trim().toUpperCase();
-          const qty = Number(r.QTY || r.qty_snap || 0);
+          const qty = parseInt(r.QTY || r.qty_snap || 0);
 
           if (!loc || !art) continue;
 
           await client.query(
-            `
-            INSERT INTO snapshot (location_id, artikel, qty_snap)
-            VALUES ($1,$2,$3)
-            ON CONFLICT (location_id, artikel)
-            DO UPDATE SET qty_snap = EXCLUDED.qty_snap
-            `,
+            `INSERT INTO inventory_snap (location_id, artikel, qty_snap)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (location_id, artikel) DO UPDATE SET qty_snap = EXCLUDED.qty_snap`,
             [loc, art, qty]
           );
         }
 
+        // Jalankan Refresh View agar Recon terupdate
+        try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+        
         await client.query('COMMIT');
-        return res.json({ status: 'success', rows: data.length });
+        return res.json({ status: 'success' });
       } catch (e) {
         await client.query('ROLLBACK');
-        console.error(e);
-        return res.status(500).json({ error: 'UPLOAD FAILED' });
-      } finally {
-        client.release();
-      }
+        throw e;
+      } finally { client.release(); }
     }
 
-    // ================= SAVE COUNT =================
+    // ================= 4. SAVE COUNT (1st & 2nd) =================
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
-
-      const table =
-        target_table === '1st Count'
-          ? 'count_1st'
-          : target_table === '2nt Count'
-          ? 'count_2nd'
-          : null;
-
-      if (!table) return res.status(400).json({ error: 'INVALID TARGET' });
+      const isFirst = target_table.includes('1st');
+      const table = isFirst ? 'inventory_first' : 'inventory_second';
+      const colQty = isFirst ? 'qty_1st' : 'qty_2nd';
 
       await pool.query(
-        `
-        INSERT INTO ${table} (location_id, artikel, qty, operator)
-        VALUES ($1,$2,$3,$4)
-        ON CONFLICT (location_id, artikel)
-        DO UPDATE SET qty = EXCLUDED.qty, operator = EXCLUDED.operator
-        `,
+        `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (location_id, artikel) 
+         DO UPDATE SET ${colQty} = EXCLUDED.${colQty}, operator = EXCLUDED.operator, timestamp = NOW()`,
         [location_id, artikel, qty, operator]
       );
 
-      return res.json({ status: 'saved' });
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+      return res.json({ status: 'success' });
     }
 
-    // ================= CLEAR =================
+    // ================= 5. CLEAR DATA (KOSONGKAN) =================
     if (req.method === 'POST') {
-      const map = {
-        clear_snap: 'snapshot',
-        clear_first: 'count_1st',
-        clear_second: 'count_2nd',
+      const clearMap = {
+        clear_snap: 'inventory_snap',
+        clear_first: 'inventory_first',
+        clear_second: 'inventory_second',
       };
 
-      if (map[action]) {
-        await pool.query(`TRUNCATE ${map[action]}`);
-        return res.json({ status: 'cleared' });
+      if (clearMap[action]) {
+        await pool.query(`TRUNCATE TABLE ${clearMap[action]}`);
+        try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+        return res.json({ status: 'success' });
       }
     }
 
-    return res.status(404).json({ error: 'NOT FOUND' });
+    // ================= 6. ASSIGN LOCATION =================
+    if (action === 'assign_location' && req.method === 'POST') {
+      const { unique_id, status } = req.body;
+      await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
+      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+      return res.status(200).json({ status: 'success' });
+    }
+
+    return res.status(404).json({ error: 'ACTION NOT FOUND' });
   } catch (err) {
-    console.error('API ERROR', err);
-    return res.status(500).json({ error: 'SERVER ERROR' });
+    console.error('CRITICAL API ERROR', err);
+    return res.status(500).json({ status: 'error', message: err.message });
   }
 }
