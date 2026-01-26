@@ -31,16 +31,41 @@ export default async function handler(req, res) {
   try {
     await warmup();
 
-    // ================= LOGIN =================
-    if (action === 'login' && req.method === 'POST') {
-      const { username, password } = req.body;
+    // ================= LOGIN =================// ================= LOGIN =================
+if (action === 'login' && req.method === 'POST') {
+  const { username, password } = req.body || {};
 
-      if (username === 'admin' && password === 'admin') {
-        return res.json({ status: 'success', user: { username } });
-      }
+  if (!username || !password) {
+    return res.status(400).json({
+      status: 'failed',
+      message: 'USERNAME / PASSWORD KOSONG',
+    });
+  }
 
-      return res.status(401).json({ status: 'failed' });
-    }
+  const { rows } = await pool.query(
+    `
+    SELECT username, name, role
+    FROM operators
+    WHERE username = $1
+      AND password = $2
+      AND status = 'active'
+    `,
+    [username.trim(), password.trim()]
+  );
+
+  if (rows.length === 0) {
+    return res.status(401).json({
+      status: 'failed',
+      message: 'LOGIN GAGAL',
+    });
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    user: rows[0],
+  });
+}
+
 
     // ================= GET DATA =================
     if (action === 'get_data' && req.method === 'GET') {
