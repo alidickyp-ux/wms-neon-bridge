@@ -71,8 +71,7 @@ export default async function handler(req, res) {
       return res.json({ status: 'success', data: rows });
     }
 
-    // ================= 3. UPLOAD SNAPSHOT (Sesuai Struktur Poin 4) =================
-// --- 4. ACTION: UPLOAD SNAPSHOT (Anti-Error) ---
+// --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE) ---
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
       if (!data || !Array.isArray(data)) {
@@ -84,21 +83,32 @@ export default async function handler(req, res) {
         await client.query('BEGIN');
         await client.query('TRUNCATE TABLE inventory_snap');
         
+        // Buat query Batch Insert
+        // ($1, $2, $3), ($4, $5, $6), dst...
+        const values = [];
+        const placeholders = [];
+        let counter = 1;
+
         for (const item of data) {
-          // Cari kolom lokasi & artikel meskipun namanya beda-beda di Excel
-          const loc = String(item.location_id || item.LOCATION || item.Lokasi || '').trim().toUpperCase();
-          const art = String(item.artikel || item.ARTICLE || item.Artikel || '').trim().toUpperCase();
-          const qty = parseInt(item.qty_snap || item.QTY || item.Qty || 0);
+          const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
+          const art = String(item.artikel || item.ARTICLE || '').trim().toUpperCase();
+          const qty = parseInt(item.qty_snap || item.QTY || 0);
 
-          if (!loc || !art) continue; // Skip jika baris kosong
+          if (!loc || !art) continue;
 
-          await client.query(
-            `INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
-             VALUES ($1, $2, $3)
-             ON CONFLICT (location_id, artikel) 
-             DO UPDATE SET qty_snap = EXCLUDED.qty_snap`,
-            [loc, art, qty]
-          );
+          values.push(loc, art, qty);
+          placeholders.push(`($${counter}, $${counter + 1}, $${counter + 2})`);
+          counter += 3;
+        }
+
+        if (values.length > 0) {
+          const batchSql = `
+            INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
+            VALUES ${placeholders.join(', ')}
+            ON CONFLICT (location_id, artikel) 
+            DO UPDATE SET qty_snap = EXCLUDED.qty_snap
+          `;
+          await client.query(batchSql, values);
         }
         
         try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
@@ -106,6 +116,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'success', total: data.length });
       } catch (e) { 
         await client.query('ROLLBACK'); 
+        console.error("BATCH_UPLOAD_ERROR:", e.message);
         return res.status(500).json({ status: 'error', message: e.message });
       } finally { client.release(); }
     }
