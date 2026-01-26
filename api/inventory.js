@@ -46,9 +46,18 @@ export default async function handler(req, res) {
     }
 
     // ================= 2. GET DATA (Sesuai Tabel Inventory) =================
+// ================= 2. GET DATA (CLEAN: NO DUPLICATE) =================
     if (action === 'get_data' && req.method === 'GET') {
       const map = {
-        master: `SELECT unique_id, assign, location_id FROM master_lokasi ORDER BY location_id ASC`,
+        // Gunakan DISTINCT ON agar unique_id tidak muncul dua kali
+        master: `
+          SELECT DISTINCT ON (unique_id) 
+            unique_id, 
+            location_id, 
+            assign 
+          FROM master_lokasi 
+          ORDER BY unique_id ASC
+        `,
         snapshot_list: `SELECT location_id, artikel, qty_snap FROM inventory_snap ORDER BY location_id ASC`,
         first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
         second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
