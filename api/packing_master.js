@@ -29,15 +29,17 @@ module.exports = async (req, res) => {
       const pcb = req.query.pcb || req.query.picklist_number;
       const { type, container } = req.query;
 
-      // A. LIST KERJA PACKING
+// A. LIST KERJA PACKING (VERSI FIX - TIDAK GAIB LAGI)
       if (action === 'get_list') {
         const result = await client.query(`
           SELECT 
-            p.picklist_number, p.nama_customer, p.status,
+            p.picklist_number, 
+            p.nama_customer, 
+            p.status,
             COUNT(DISTINCT p.product_id)::int AS total_sku,
             SUM(p.qty_actual)::int AS total_pcs_picked
           FROM picklist_raw p
-          WHERE LOWER(p.status) IN ('fully picked', 'partial picked')
+          WHERE LOWER(p.status) IN ('fully picked', 'partial picked', 'partially packed') -- TAMBAHKAN 'partially packed'
           GROUP BY p.picklist_number, p.nama_customer, p.status
           ORDER BY p.picklist_number DESC
         `);
