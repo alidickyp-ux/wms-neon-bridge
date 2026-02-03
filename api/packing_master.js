@@ -46,29 +46,35 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows });
       }
 
-      // B. HISTORY RE-PRINT
-// B. HISTORY RE-PRINT
-if (action === 'get_history_list') {
-  const result = await client.query(`
-    SELECT 
-      pt.picklist_number,
-      p.nama_customer,
-      MAX(pt.status) AS status_packing,
-      COUNT(DISTINCT pt.container_number)::int AS total_box,
-      SUM(pt.qty_packed)::int AS total_pcs_packed,
-      -- TAMBAHKAN BARIS DI BAWAH INI --
-      SUM(COALESCE(pt.weight_kg, 0))::float AS total_weight 
-    FROM packing_transactions pt
-    JOIN (
-      SELECT DISTINCT picklist_number, nama_customer 
-      FROM picklist_raw
-    ) p ON pt.picklist_number = p.picklist_number
-    GROUP BY pt.picklist_number, p.nama_customer
-    ORDER BY pt.picklist_number DESC
-  `);
+// B. HISTORY RE-PRINT (VERSI FIX - BERAT TIDAK DOUBLE)
+      if (action === 'get_history_list') {
+        const result = await client.query(`
+          SELECT 
+            pt.picklist_number,
+            p.nama_customer,
+            MAX(pt.status) AS status_packing,
+            COUNT(DISTINCT pt.container_number)::int AS total_box,
+            SUM(pt.qty_packed)::int AS total_pcs_packed,
+            -- INI KUNCINYA: Menghitung berat unik per Box agar tidak double
+            (
+              SELECT SUM(weight_kg) 
+              FROM (
+                SELECT DISTINCT container_number, weight_kg 
+                FROM packing_transactions t2 
+                WHERE t2.picklist_number = pt.picklist_number
+              ) AS unique_weights
+            )::float AS total_weight
+          FROM packing_transactions pt
+          JOIN (
+            SELECT DISTINCT picklist_number, nama_customer 
+            FROM picklist_raw
+          ) p ON pt.picklist_number = p.picklist_number
+          GROUP BY pt.picklist_number, p.nama_customer
+          ORDER BY pt.picklist_number DESC
+        `);
 
-  return res.json({ status: 'success', data: result.rows });
-}
+        return res.json({ status: 'success', data: result.rows });
+      }
 
       // C. HEADER INFO (Detail untuk Packing Activity)
       if (action === 'get_info') {
