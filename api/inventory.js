@@ -114,11 +114,11 @@ export default async function handler(req, res) {
             counter += 3;
           }
 
-          const batchSql = `
-            INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
+            const batchSql = `
+            INSERT INTO inventory_snap (location_id, artikel, qty_snap, description) 
             VALUES ${placeholders.join(', ')}
             ON CONFLICT (location_id, artikel) 
-            DO UPDATE SET qty_snap = EXCLUDED.qty_snap
+            DO UPDATE SET qty_snap = EXCLUDED.qty_snap, description = EXCLUDED.description
           `;
           await client.query(batchSql, values);
         }
