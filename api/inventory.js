@@ -45,11 +45,9 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', user: rows[0] });
     }
 
-    // ================= 2. GET DATA (Sesuai Tabel Inventory) =================
-// ================= 2. GET DATA (CLEAN: NO DUPLICATE) =================
+// ================= 2. GET DATA (FIXED: ADDED JOIN FOR DESCRIPTION) =================
     if (action === 'get_data' && req.method === 'GET') {
       const map = {
-        // Gunakan DISTINCT ON agar unique_id tidak muncul dua kali
         master: `
           SELECT DISTINCT ON (unique_id) 
             unique_id, 
@@ -58,7 +56,20 @@ export default async function handler(req, res) {
           FROM master_lokasi 
           ORDER BY unique_id ASC
         `,
-        snapshot_list: `SELECT location_id, artikel, qty_snap FROM inventory_snap ORDER BY location_id ASC`,
+        /**
+         * FIX: Melakukan Lookup Deskripsi dari tabel Reconciliation atau Master
+         * Kita gunakan LEFT JOIN agar jika deskripsi tidak ditemukan, data tetap muncul
+         */
+        snapshot_list: `
+          SELECT 
+            s.location_id, 
+            s.artikel, 
+            s.qty_snap, 
+            r.description 
+          FROM inventory_snap s
+          LEFT JOIN inventory_reconciliation r ON s.artikel = r.artikel AND s.location_id = r.location_id
+          ORDER BY s.location_id ASC
+        `,
         first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
         second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
         recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
@@ -71,8 +82,7 @@ export default async function handler(req, res) {
       return res.json({ status: 'success', data: rows });
     }
 
-// --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE) ---
-// --- 4. ACTION: UPLOAD SNAPSHOT (FIXED DUPLICATE IN FILE) ---
+    // --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE - FIXED COLUMN COUNT) ---
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
       if (!data || !Array.isArray(data)) {
@@ -84,7 +94,6 @@ export default async function handler(req, res) {
         await client.query('BEGIN');
         await client.query('TRUNCATE TABLE inventory_snap');
         
-        // --- PROSES MERINGKAS DATA DUPLIKAT DI FILE EXCEL ---
         const summaryMap = {};
         for (const item of data) {
           const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
@@ -95,13 +104,12 @@ export default async function handler(req, res) {
 
           const key = `${loc}|${art}`;
           if (summaryMap[key]) {
-            summaryMap[key].qty += qty; // Jika duplikat di file, tambahkan Qty-nya
+            summaryMap[key].qty += qty;
           } else {
             summaryMap[key] = { loc, art, qty };
           }
         }
 
-        // --- BATCH INSERT DATA YANG SUDAH RINGKAS ---
         const finalValues = Object.values(summaryMap);
         if (finalValues.length > 0) {
           const values = [];
@@ -110,15 +118,20 @@ export default async function handler(req, res) {
 
           for (const item of finalValues) {
             values.push(item.loc, item.art, item.qty);
+            // Counter kembali ke 3 karena upload Ali hanya kirim 3 kolom
             placeholders.push(`($${counter}, $${counter + 1}, $${counter + 2})`);
             counter += 3;
           }
 
-            const batchSql = `
-            INSERT INTO inventory_snap (location_id, artikel, qty_snap, description) 
+          /**
+           * FIX: Query INSERT kembali ke 3 kolom (location_id, artikel, qty_snap)
+           * Deskripsi tidak di-insert karena Ali ingin Lookup dari tabel lain
+           */
+          const batchSql = `
+            INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
             VALUES ${placeholders.join(', ')}
             ON CONFLICT (location_id, artikel) 
-            DO UPDATE SET qty_snap = EXCLUDED.qty_snap, description = EXCLUDED.description
+            DO UPDATE SET qty_snap = EXCLUDED.qty_snap
           `;
           await client.query(batchSql, values);
         }
