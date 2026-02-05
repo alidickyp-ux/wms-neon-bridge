@@ -45,42 +45,44 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'success', user: rows[0] });
     }
 
-// ================= 2. GET DATA (FIXED: ADDED JOIN FOR DESCRIPTION) =================
-    if (action === 'get_data' && req.method === 'GET') {
-      const map = {
-        master: `
-          SELECT DISTINCT ON (unique_id) 
-            unique_id, 
-            location_id, 
-            assign 
-          FROM master_lokasi 
-          ORDER BY unique_id ASC
-        `,
-        /**
-         * FIX: Melakukan Lookup Deskripsi dari tabel Reconciliation atau Master
-         * Kita gunakan LEFT JOIN agar jika deskripsi tidak ditemukan, data tetap muncul
-         */
-        snapshot_list: `
-          SELECT 
-            s.location_id, 
-            s.artikel, 
-            s.qty_snap, 
-            r.description 
-          FROM inventory_snap s
-          LEFT JOIN inventory_reconciliation r ON s.artikel = r.artikel AND s.location_id = r.location_id
-          ORDER BY s.location_id ASC
-        `,
-        first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
-        second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
-        recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
-      };
+// ================= 2. GET DATA (LOOKUP KE MASTER PRODUCT) =================
+if (action === 'get_data' && req.method === 'GET') {
+  const map = {
+    master: `
+      SELECT DISTINCT ON (unique_id) 
+        unique_id, 
+        location_id, 
+        assign 
+      FROM master_lokasi 
+      ORDER BY unique_id ASC
+    `,
+    /**
+     * FIX: Mengambil deskripsi dari tabel master_product.
+     * s.artikel dicocokkan dengan p.product_id.
+     * LEFT JOIN digunakan agar jika artikel belum terdaftar di master_product, 
+     * data snapshot tetap muncul (deskripsi akan berisi null/-).
+     */
+    snapshot_list: `
+      SELECT 
+        s.location_id, 
+        s.artikel, 
+        s.qty_snap, 
+        p.description 
+      FROM inventory_snap s
+      LEFT JOIN master_product p ON s.artikel = p.product_id
+      ORDER BY s.location_id ASC
+    `,
+    first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
+    second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
+    recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
+  };
 
-      const sql = map[target];
-      if (!sql) return res.json({ data: [] });
+  const sql = map[target];
+  if (!sql) return res.json({ data: [] });
 
-      const { rows } = await pool.query(sql);
-      return res.json({ status: 'success', data: rows });
-    }
+  const { rows } = await pool.query(sql);
+  return res.json({ status: 'success', data: rows });
+}
 
     // --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE - FIXED COLUMN COUNT) ---
     if (action === 'upload_snap' && req.method === 'POST') {
