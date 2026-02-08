@@ -12,7 +12,6 @@ const pool = new Pool({
 });
 
 export default async function handler(req, res) {
-  // --- Header No Cache & CORS ---
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -23,73 +22,51 @@ export default async function handler(req, res) {
   const { action, target } = req.query;
 
   try {
-    // ================= 1. LOGIN (Sesuai Tabel operators) =================
+    // ================= 1. LOGIN =================
     if (action === 'login' && req.method === 'POST') {
       const { username, password } = req.body || {};
+      if (!username || !password) return res.status(400).json({ status: 'failed', message: 'ISI USER & PASS' });
 
-      if (!username || !password) {
-        return res.status(400).json({ status: 'failed', message: 'ISI USER & PASS' });
-      }
-
-      // Sesuaikan query dengan kolom full_name (bukan name)
       const { rows } = await pool.query(
-        `SELECT username, full_name, role FROM operators 
-         WHERE username = $1 AND password = $2`,
+        `SELECT username, full_name, role FROM operators WHERE username = $1 AND password = $2`,
         [username.trim(), password.trim()]
       );
 
-      if (rows.length === 0) {
-        return res.status(401).json({ status: 'failed', message: 'LOGIN GAGAL' });
-      }
-
+      if (rows.length === 0) return res.status(401).json({ status: 'failed', message: 'LOGIN GAGAL' });
       return res.status(200).json({ status: 'success', user: rows[0] });
     }
 
-// ================= 2. GET DATA (LOOKUP KE MASTER PRODUCT) =================
-if (action === 'get_data' && req.method === 'GET') {
-  const map = {
-    master: `
-      SELECT DISTINCT ON (unique_id) 
-        unique_id, 
-        location_id, 
-        assign 
-      FROM master_lokasi 
-      ORDER BY unique_id ASC
-    `,
-    /**
-     * FIX: Mengambil deskripsi dari tabel master_product.
-     * s.artikel dicocokkan dengan p.product_id.
-     * LEFT JOIN digunakan agar jika artikel belum terdaftar di master_product, 
-     * data snapshot tetap muncul (deskripsi akan berisi null/-).
-     */
-    snapshot_list: `
-      SELECT 
-        s.location_id, 
-        s.artikel, 
-        s.qty_snap, 
-        p.description 
-      FROM inventory_snap s
-      LEFT JOIN master_product p ON s.artikel = p.product_id
-      ORDER BY s.location_id ASC
-    `,
-    first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
-    second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
-    recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
-  };
+    // ================= 2. GET DATA (DENGAN ENDPOINT BARU master_all) =================
+    if (action === 'get_data' && req.method === 'GET') {
+      const map = {
+        // Master untuk Grid View (Disederhanakan/Unique)
+        master: `SELECT DISTINCT ON (unique_id) unique_id, location_id, assign FROM master_lokasi ORDER BY unique_id ASC`,
+        
+        // ENDPOINT BARU: Master untuk Database View (Tampilkan Semua Baris)
+        master_all: `SELECT location_id, zone, aisle, unique_id, assign FROM master_lokasi ORDER BY location_id ASC`,
+        
+        snapshot_list: `
+          SELECT s.location_id, s.artikel, s.qty_snap, p.description 
+          FROM inventory_snap s
+          LEFT JOIN master_product p ON s.artikel = p.product_id
+          ORDER BY s.location_id ASC
+        `,
+        first: `SELECT * FROM inventory_first ORDER BY timestamp DESC`,
+        second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
+        recon: `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
+      };
 
-  const sql = map[target];
-  if (!sql) return res.json({ data: [] });
+      const sql = map[target];
+      if (!sql) return res.json({ data: [] });
 
-  const { rows } = await pool.query(sql);
-  return res.json({ status: 'success', data: rows });
-}
+      const { rows } = await pool.query(sql);
+      return res.json({ status: 'success', data: rows });
+    }
 
-    // --- 4. ACTION: UPLOAD SNAPSHOT (BATCH MODE - FIXED COLUMN COUNT) ---
+    // ================= 3. UPLOAD SNAPSHOT =================
     if (action === 'upload_snap' && req.method === 'POST') {
       const { data } = req.body;
-      if (!data || !Array.isArray(data)) {
-        return res.status(400).json({ status: 'error', message: 'Data tidak valid' });
-      }
+      if (!data || !Array.isArray(data)) return res.status(400).json({ status: 'error', message: 'Data tidak valid' });
 
       const client = await pool.connect();
       try {
@@ -101,15 +78,10 @@ if (action === 'get_data' && req.method === 'GET') {
           const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
           const art = String(item.artikel || item.ARTICLE || '').trim().toUpperCase();
           const qty = parseInt(item.qty_snap || item.QTY || 0);
-
           if (!loc || !art) continue;
-
           const key = `${loc}|${art}`;
-          if (summaryMap[key]) {
-            summaryMap[key].qty += qty;
-          } else {
-            summaryMap[key] = { loc, art, qty };
-          }
+          if (summaryMap[key]) summaryMap[key].qty += qty;
+          else summaryMap[key] = { loc, art, qty };
         }
 
         const finalValues = Object.values(summaryMap);
@@ -117,38 +89,45 @@ if (action === 'get_data' && req.method === 'GET') {
           const values = [];
           const placeholders = [];
           let counter = 1;
-
           for (const item of finalValues) {
             values.push(item.loc, item.art, item.qty);
-            // Counter kembali ke 3 karena upload Ali hanya kirim 3 kolom
             placeholders.push(`($${counter}, $${counter + 1}, $${counter + 2})`);
             counter += 3;
           }
-
-          /**
-           * FIX: Query INSERT kembali ke 3 kolom (location_id, artikel, qty_snap)
-           * Deskripsi tidak di-insert karena Ali ingin Lookup dari tabel lain
-           */
-          const batchSql = `
-            INSERT INTO inventory_snap (location_id, artikel, qty_snap) 
-            VALUES ${placeholders.join(', ')}
-            ON CONFLICT (location_id, artikel) 
-            DO UPDATE SET qty_snap = EXCLUDED.qty_snap
-          `;
-          await client.query(batchSql, values);
+          await client.query(`INSERT INTO inventory_snap (location_id, artikel, qty_snap) VALUES ${placeholders.join(', ')}`, values);
         }
         
         try { await client.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
         await client.query('COMMIT');
         return res.status(200).json({ status: 'success', total: finalValues.length });
-      } catch (e) { 
-        await client.query('ROLLBACK'); 
-        console.error("FIXED_BATCH_ERROR:", e.message);
+      } catch (e) {
+        await client.query('ROLLBACK');
         return res.status(500).json({ status: 'error', message: e.message });
       } finally { client.release(); }
     }
 
-    // ================= 4. SAVE COUNT (1st & 2nd) =================
+    // ================= 4. MANAJEMEN LOKASI (ADD & DELETE) =================
+    // Tambah Lokasi Manual
+    if (action === 'add_location' && req.method === 'POST') {
+      const { location_id } = req.body;
+      // Logika sederhana untuk memecah unique_id dari location_id (Misal: 1A-1 dari 00104014)
+      // Ali bisa menyesuaikan logika substring ini sesuai format barcode Ali
+      await pool.query(
+        `INSERT INTO master_lokasi (location_id, assign) VALUES ($1, 'closed')
+         ON CONFLICT (location_id) DO NOTHING`,
+        [location_id.trim().toUpperCase()]
+      );
+      return res.json({ status: 'success' });
+    }
+
+    // Hapus Lokasi Manual
+    if (action === 'delete_location' && req.method === 'POST') {
+      const { unique_id } = req.body; // Menggunakan location_id/unique_id sebagai identifier
+      await pool.query(`DELETE FROM master_lokasi WHERE location_id = $1 OR unique_id = $1`, [unique_id]);
+      return res.json({ status: 'success' });
+    }
+
+    // ================= 5. SAVE COUNT & ASSIGN =================
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
       const isFirst = target_table.includes('1st');
@@ -162,32 +141,25 @@ if (action === 'get_data' && req.method === 'GET') {
          DO UPDATE SET ${colQty} = EXCLUDED.${colQty}, operator = EXCLUDED.operator, timestamp = NOW()`,
         [location_id, artikel, qty, operator]
       );
-
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.json({ status: 'success' });
     }
 
-    // ================= 5. CLEAR DATA (KOSONGKAN) =================
-    if (req.method === 'POST') {
-      const clearMap = {
-        clear_snap: 'inventory_snap',
-        clear_first: 'inventory_first',
-        clear_second: 'inventory_second',
-      };
-
-      if (clearMap[action]) {
-        await pool.query(`TRUNCATE TABLE ${clearMap[action]}`);
-        try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
-        return res.json({ status: 'success' });
-      }
-    }
-
-    // ================= 6. ASSIGN LOCATION =================
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
       await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.status(200).json({ status: 'success' });
+    }
+
+    // ================= 6. CLEAR DATA =================
+    if (req.method === 'POST') {
+      const clearMap = { clear_snap: 'inventory_snap', clear_first: 'inventory_first', clear_second: 'inventory_second' };
+      if (clearMap[action]) {
+        await pool.query(`TRUNCATE TABLE ${clearMap[action]}`);
+        try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
+        return res.json({ status: 'success' });
+      }
     }
 
     return res.status(404).json({ error: 'ACTION NOT FOUND' });
