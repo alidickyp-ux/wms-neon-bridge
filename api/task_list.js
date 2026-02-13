@@ -205,7 +205,7 @@ if (picklist_number && action !== 'get_list') {
                 'qty_actual', COALESCE(sub.qty_actual, 0), 
                 'sisa_qty', (sub.qty_pick - COALESCE(sub.qty_actual, 0)),
                 'status', sub.status
-              ) ORDER BY sub.lantai_level, sub.zona, sub.row_val, sub.rak_raw, sub.level_val) 
+              ) ORDER BY sub.lantai_level, sub.row_val, sub.subrow, sub.rak_raw, sub.level_val) 
               FROM picklist_raw sub 
               LEFT JOIN master_product mp ON sub.product_id = mp.product_id
               WHERE sub.picklist_number = p.picklist_number AND sub.status != 'fully picked'
