@@ -182,8 +182,8 @@ if (picklist_number && action !== 'get_list') {
             pr.location_id, pr.lantai_level, pr.zona, pr.row_val, pr.rak_raw, pr.level_val
           ORDER BY 
             pr.lantai_level ASC, 
-            pr.zona ASC, 
-            pr.row_val ASC, 
+            pr.row_val ASC,
+            pr.subrow ASC,
             pr.rak_raw ASC, 
             pr.level_val ASC
         `, [picklist_number]);
