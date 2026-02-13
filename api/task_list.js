@@ -162,34 +162,58 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: 'success', data: resPack.rows });
       }
 
-      if (picklist_number && action !== 'get_list') {
+if (picklist_number && action !== 'get_list') {
         const resDetail = await client.query(`
-          SELECT pr.location_id, json_agg(json_build_object(
-            'product_id', pr.product_id, 'description', mp.description,
-            'qty_pick', pr.qty_pick, 'qty_actual', COALESCE(pr.qty_actual, 0),
-            'sisa_qty', (pr.qty_pick - COALESCE(pr.qty_actual, 0)),
-            'status', pr.status
-          )) as items_json
+          SELECT 
+            pr.location_id, 
+            pr.lantai_level, pr.zona, pr.row_val, pr.rak_raw, pr.level_val,
+            json_agg(json_build_object(
+              'product_id', pr.product_id, 
+              'description', mp.description,
+              'qty_pick', pr.qty_pick, 
+              'qty_actual', COALESCE(pr.qty_actual, 0),
+              'sisa_qty', (pr.qty_pick - COALESCE(pr.qty_actual, 0)),
+              'status', pr.status
+            )) as items_json
           FROM picklist_raw pr
           LEFT JOIN master_product mp ON pr.product_id = mp.product_id 
           WHERE pr.picklist_number = $1 AND pr.status != 'fully picked'
-          GROUP BY pr.location_id
+          GROUP BY 
+            pr.location_id, pr.lantai_level, pr.zona, pr.row_val, pr.rak_raw, pr.level_val
+          ORDER BY 
+            pr.lantai_level ASC, 
+            pr.zona ASC, 
+            pr.row_val ASC, 
+            pr.rak_raw ASC, 
+            pr.level_val ASC
         `, [picklist_number]);
         return res.status(200).json({ status: 'success', data: resDetail.rows });
       }
 
       const resList = await client.query(`
-        SELECT p.picklist_number, p.nama_customer, p.status, SUM(p.qty_pick)::int AS total_qty,
-        COALESCE((
-            SELECT json_agg(json_build_object(
-              'product_id', sub.product_id, 'description', COALESCE(mp.description, sub.product_id),
-              'location_id', sub.location_id, 'qty_pick', sub.qty_pick, 
-              'qty_actual', COALESCE(sub.qty_actual, 0), 'sisa_qty', (sub.qty_pick - COALESCE(sub.qty_actual, 0)),
-              'status', sub.status
-            )) FROM picklist_raw sub LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-            WHERE sub.picklist_number = p.picklist_number AND sub.status != 'fully picked'
-        ), '[]') as items FROM picklist_raw p WHERE p.status != 'fully picked'
-        GROUP BY p.picklist_number, p.nama_customer, p.status ORDER BY p.picklist_number DESC
+        SELECT 
+          p.picklist_number, 
+          p.nama_customer, 
+          p.status, 
+          SUM(p.qty_pick)::int AS total_qty,
+          COALESCE((
+              SELECT json_agg(json_build_object(
+                'product_id', sub.product_id, 
+                'description', COALESCE(mp.description, sub.product_id),
+                'location_id', sub.location_id, 
+                'qty_pick', sub.qty_pick, 
+                'qty_actual', COALESCE(sub.qty_actual, 0), 
+                'sisa_qty', (sub.qty_pick - COALESCE(sub.qty_actual, 0)),
+                'status', sub.status
+              ) ORDER BY sub.lantai_level, sub.zona, sub.row_val, sub.rak_raw, sub.level_val) 
+              FROM picklist_raw sub 
+              LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+              WHERE sub.picklist_number = p.picklist_number AND sub.status != 'fully picked'
+          ), '[]') as items 
+        FROM picklist_raw p 
+        WHERE p.status != 'fully picked'
+        GROUP BY p.picklist_number, p.nama_customer, p.status 
+        ORDER BY p.picklist_number DESC
       `);
       return res.status(200).json({ status: 'success', data: resList.rows });
     }
