@@ -148,7 +148,7 @@ if (action === 'get_print_data') {
     try {
         const result = await client.query(`
             SELECT pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
-                   MAX(pt.updated_at) as tanggal_packing, 
+                   MAX(pt.scanned_at) as tanggal_packing, 
                    COALESCE(an.no_sj, '-') AS no_sj,
                    COALESCE(an.nama_toko, (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1)) AS nama_toko,
                    COALESCE(an.alamat, '-') AS alamat_toko,
