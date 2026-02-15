@@ -144,45 +144,62 @@ if (action === 'get_history_list') {
       }
 
 if (action === 'get_print_data') {
+    const { pcb } = req.query;
+    try {
         const result = await client.query(`
-          SELECT pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
-                 -- Mengambil tanggal packing (kapan box ditutup)
-                 MAX(pt.updated_at) as tanggal_packing, 
-                 COALESCE(an.no_sj, '-') AS no_sj,
-                 COALESCE(an.nama_toko, (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1)) AS nama_toko,
-                 COALESCE(an.alamat, '-') AS alamat_toko,
-                 COALESCE(an.address, '-') AS address_toko,
-                 COALESCE(pt.weight_kg, 0)::float AS weight_kg,
-                 SUM(pt.qty_packed)::int AS total_pcs_box,
-                 MAX(pt.scanned_by) AS packer_name,
-                 (SELECT json_agg(items) FROM (
-                    SELECT sub.product_id AS sku, MAX(COALESCE(mp.description, sub.product_id)) AS nama_item, SUM(sub.qty_packed)::int AS qty
-                    FROM packing_transactions sub
-                    LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-                    WHERE sub.picklist_number = pt.picklist_number AND sub.container_number = pt.container_number
-                    GROUP BY sub.product_id
-                 ) items) AS item_details
-          FROM packing_transactions pt
-          LEFT JOIN autoneon an ON pt.picklist_number = an.no_picking
-          WHERE pt.picklist_number = $1
-          GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg, an.no_sj, an.nama_toko, an.alamat, an.address
-          ORDER BY pt.container_number
+            SELECT pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
+                   MAX(pt.updated_at) as tanggal_packing, 
+                   COALESCE(an.no_sj, '-') AS no_sj,
+                   COALESCE(an.nama_toko, (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1)) AS nama_toko,
+                   COALESCE(an.alamat, '-') AS alamat_toko,
+                   COALESCE(an.address, '-') AS address_toko,
+                   COALESCE(pt.weight_kg, 0)::float AS weight_kg,
+                   SUM(pt.qty_packed)::int AS total_pcs_box,
+                   MAX(pt.scanned_by) AS packer_name,
+                   (SELECT json_agg(items) FROM (
+                      SELECT sub.product_id AS sku, MAX(COALESCE(mp.description, sub.product_id)) AS nama_item, SUM(sub.qty_packed)::int AS qty
+                      FROM packing_transactions sub
+                      LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+                      WHERE sub.picklist_number = pt.picklist_number AND sub.container_number = pt.container_number
+                      GROUP BY sub.product_id
+                   ) items) AS item_details
+            FROM packing_transactions pt
+            LEFT JOIN autoneon an ON pt.picklist_number = an.no_picking
+            WHERE pt.picklist_number = $1
+            GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg, an.no_sj, an.nama_toko, an.alamat, an.address
+            ORDER BY pt.container_number
         `, [pcb]);
 
+        if (result.rows.length === 0) {
+            return res.json({ status: 'success', data: [] });
+        }
+
         const enriched = await Promise.all(result.rows.map(async (row) => {
-          // Generate QR Code dari HUID
-          const qr = await QRCode.toDataURL(row.huid, { width: 400, margin: 2 });
-          // Generate Barcode dari NO SJ (Jika ada)
-          let sjBarcode = null;
-          if (row.no_sj && row.no_sj !== '-') {
-             // Kita pakai qrcode juga tapi formatnya memanjang atau bisa pakai library barcode lain
-             // Untuk kemudahan, kita buat QR/Barcode dari No SJ juga
-             sjBarcode = await QRCode.toDataURL(row.no_sj, { width: 600, margin: 1 });
-          }
-          return { ...row, qr_code_image: qr, sj_barcode_image: sjBarcode };
+            let qr = null;
+            let sjBarcode = null;
+
+            try {
+                // Generate QR HUID
+                qr = await QRCode.toDataURL(row.huid || "empty", { width: 300, margin: 2 });
+                
+                // Generate Barcode No SJ (Jika Valid)
+                if (row.no_sj && row.no_sj !== '-') {
+                    sjBarcode = await QRCode.toDataURL(row.no_sj, { width: 500, margin: 1 });
+                }
+            } catch (e) {
+                console.error("Gagal generate QR:", e.message);
+            }
+
+            return { ...row, qr_code_image: qr, sj_barcode_image: sjBarcode };
         }));
+
         return res.json({ status: 'success', data: enriched });
-      }
+
+    } catch (err) {
+        console.error("DATABASE ERROR:", err.message);
+        return res.status(500).json({ status: 'error', message: err.message });
+    }
+}
     }
     // ==========================================
     // 3. LOGIKA POST
