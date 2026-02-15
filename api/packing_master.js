@@ -46,35 +46,39 @@ module.exports = async (req, res) => {
         return res.json({ status: 'success', data: result.rows });
       }
 
-// B. HISTORY RE-PRINT (VERSI FIX - BERAT TIDAK DOUBLE)
-      if (action === 'get_history_list') {
-        const result = await client.query(`
-          SELECT 
-            pt.picklist_number,
-            p.nama_customer,
-            MAX(pt.status) AS status_packing,
-            COUNT(DISTINCT pt.container_number)::int AS total_box,
-            SUM(pt.qty_packed)::int AS total_pcs_packed,
-            -- INI KUNCINYA: Menghitung berat unik per Box agar tidak double
-            (
-              SELECT SUM(weight_kg) 
-              FROM (
-                SELECT DISTINCT container_number, weight_kg 
-                FROM packing_transactions t2 
-                WHERE t2.picklist_number = pt.picklist_number
-              ) AS unique_weights
-            )::float AS total_weight
-          FROM packing_transactions pt
-          JOIN (
-            SELECT DISTINCT picklist_number, nama_customer 
-            FROM picklist_raw
-          ) p ON pt.picklist_number = p.picklist_number
-          GROUP BY pt.picklist_number, p.nama_customer
-          ORDER BY pt.picklist_number DESC
-        `);
+// B. HISTORY RE-PRINT (VERSI DENGAN DATA DARI AUTONEON)
+if (action === 'get_history_list') {
+  const result = await client.query(`
+    SELECT 
+      pt.picklist_number,
+      -- Mengambil No SJ, Nama Toko, Alamat dari tabel autoneon
+      COALESCE(an.no_sj, '-') as no_sj,
+      COALESCE(an.nama_toko, p.nama_customer) as nama_customer,
+      COALESCE(an.alamat, '-') as alamat_toko,
+      MAX(pt.status) AS status_packing,
+      COUNT(DISTINCT pt.container_number)::int AS total_box,
+      SUM(pt.qty_packed)::int AS total_pcs_packed,
+      (
+        SELECT SUM(weight_kg) 
+        FROM (
+          SELECT DISTINCT container_number, weight_kg 
+          FROM packing_transactions t2 
+          WHERE t2.picklist_number = pt.picklist_number
+        ) AS unique_weights
+      )::float AS total_weight
+    FROM packing_transactions pt
+    JOIN (
+      SELECT DISTINCT picklist_number, nama_customer 
+      FROM picklist_raw
+    ) p ON pt.picklist_number = p.picklist_number
+    -- JOIN KE TABEL BARU
+    LEFT JOIN autoneon an ON pt.picklist_number = an.no_picking
+    GROUP BY pt.picklist_number, p.nama_customer, an.no_sj, an.nama_toko, an.alamat
+    ORDER BY pt.picklist_number DESC
+  `);
 
-        return res.json({ status: 'success', data: result.rows });
-      }
+  return res.json({ status: 'success', data: result.rows });
+}
 
       // C. HEADER INFO (Detail untuk Packing Activity)
       if (action === 'get_info') {
@@ -140,43 +144,64 @@ module.exports = async (req, res) => {
       }
 
       // F. PRINT DATA + QR (Data Lengkap untuk Android)
-      if (action === 'get_print_data') {
-        const result = await client.query(`
+if (action === 'get_print_data') {
+  const { pcb } = req.query; // Pastikan pcb dikirim via query string
+  
+  const result = await client.query(`
+    SELECT 
+      pt.container_number, 
+      pt.huid, 
+      pt.container_type, 
+      pt.picklist_number,
+      -- AMBIL DATA DARI TABEL AUTONEON
+      COALESCE(an.no_sj, '-') AS no_sj,
+      COALESCE(an.nama_toko, (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1)) AS nama_toko,
+      COALESCE(an.alamat, '-') AS alamat_toko,
+      COALESCE(an.address, '-') AS address_toko,
+      COALESCE(pt.weight_kg, 0)::float AS weight_kg,
+      SUM(pt.qty_packed)::int AS total_pcs_box,
+      MAX(pt.scanned_by) AS packer_name,
+      (
+        SELECT json_agg(items)
+        FROM (
           SELECT 
-            pt.container_number, pt.huid, pt.container_type, pt.picklist_number,
-            (SELECT nama_customer FROM picklist_raw WHERE picklist_number = pt.picklist_number LIMIT 1) AS nama_toko,
-            COALESCE(pt.weight_kg, 0)::float AS weight_kg,
-            SUM(pt.qty_packed)::int AS total_pcs_box,
-            MAX(pt.scanned_by) AS packer_name,
-            (
-              SELECT json_agg(items)
-              FROM (
-                SELECT 
-                  sub.product_id AS sku, 
-                  MAX(COALESCE(mp.description, sub.product_id)) AS nama_item,
-                  SUM(sub.qty_packed)::int AS qty
-                FROM packing_transactions sub
-                LEFT JOIN master_product mp ON sub.product_id = mp.product_id
-                WHERE sub.picklist_number = pt.picklist_number AND sub.container_number = pt.container_number
-                GROUP BY sub.product_id
-              ) items
-            ) AS item_details
-          FROM packing_transactions pt
-          WHERE pt.picklist_number = $1
-          GROUP BY pt.picklist_number, pt.container_number, pt.huid, pt.container_type, pt.weight_kg
-          ORDER BY pt.container_number
-        `, [pcb]);
+            sub.product_id AS sku, 
+            MAX(COALESCE(mp.description, sub.product_id)) AS nama_item,
+            SUM(sub.qty_packed)::int AS qty
+          FROM packing_transactions sub
+          LEFT JOIN master_product mp ON sub.product_id = mp.product_id
+          WHERE sub.picklist_number = pt.picklist_number 
+            AND sub.container_number = pt.container_number
+          GROUP BY sub.product_id
+        ) items
+      ) AS item_details
+    FROM packing_transactions pt
+    -- JOIN KE TABEL BARU BOS
+    LEFT JOIN autoneon an ON pt.picklist_number = an.no_picking
+    WHERE pt.picklist_number = $1
+    GROUP BY 
+      pt.picklist_number, 
+      pt.container_number, 
+      pt.huid, 
+      pt.container_type, 
+      pt.weight_kg, 
+      an.no_sj, 
+      an.nama_toko, 
+      an.alamat, 
+      an.address
+    ORDER BY pt.container_number
+  `, [pcb]);
 
-        const enriched = await Promise.all(
-          result.rows.map(async (row) => {
-            const qr = await QRCode.toDataURL(row.huid, { width: 400, margin: 2 });
-            return { ...row, qr_code_image: qr };
-          })
-        );
-        return res.json({ status: 'success', data: enriched });
-      }
-    } // END GET
+  const enriched = await Promise.all(
+    result.rows.map(async (row) => {
+      // Generate QR Code dari HUID
+      const qr = await QRCode.toDataURL(row.huid, { width: 400, margin: 2 });
+      return { ...row, qr_code_image: qr };
+    })
+  );
 
+  return res.json({ status: 'success', data: enriched });
+}
     // ==========================================
     // 3. LOGIKA POST
     // ==========================================
