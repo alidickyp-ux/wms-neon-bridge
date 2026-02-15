@@ -1,5 +1,26 @@
 const { Pool } = require('pg');
 const QRCode = require('qrcode');
+const bwipjs = require('bwip-js'); // Tambahkan ini di paling atas file
+
+// ... di dalam map enriched ...
+if (row.no_sj && row.no_sj !== '-') {
+    try {
+        // PENTING: Pakai bwipjs untuk menghasilkan Barcode 1D (Code 128)
+        const png = await bwipjs.toBuffer({
+            bcid: 'code128',       // Jenis barcode garis standar (bisa di-scan semua scanner)
+            text: row.no_sj,       // Isi Barcode (No SJ)
+            scale: 3,              // Resolusi tinggi biar gak pecah
+            height: 10,            // Tinggi barcode
+            includetext: false,    // Kita gak perlu teks di bawahnya karena sudah ada TextView
+        });
+        
+        // Convert hasil buffer ke Base64 agar bisa dibaca Android
+        sjBarcode = `data:image/png;base64,${png.toString('base64')}`;
+    } catch (e) {
+        console.error("Gagal buat Barcode SJ:", e.message);
+        sjBarcode = null;
+    }
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -179,15 +200,22 @@ if (action === 'get_print_data') {
             let sjBarcode = null;
 
             try {
-                // Generate QR HUID
+                // A. GENERATE QR HUID (Tetap Kotak)
                 qr = await QRCode.toDataURL(row.huid || "empty", { width: 300, margin: 2 });
                 
-                // Generate Barcode No SJ (Jika Valid)
+                // B. GENERATE BARCODE 1D UNTUK NO SJ (Garis Memanjang)
                 if (row.no_sj && row.no_sj !== '-') {
-                    sjBarcode = await QRCode.toDataURL(row.no_sj, { width: 500, margin: 1 });
+                    const png = await bwipjs.toBuffer({
+                        bcid: 'code128',       // Standar Barcode 1D Logistik
+                        text: row.no_sj,       // Isi Nomor SJ
+                        scale: 3,              // Resolusi Tinggi
+                        height: 10,            // Tinggi Barcode
+                        includetext: false     // Teks No SJ sudah ada di TextView Android
+                    });
+                    sjBarcode = `data:image/png;base64,${png.toString('base64')}`;
                 }
             } catch (e) {
-                console.error("Gagal generate QR:", e.message);
+                console.error("Gagal generate QR/Barcode:", e.message);
             }
 
             return { ...row, qr_code_image: qr, sj_barcode_image: sjBarcode };
