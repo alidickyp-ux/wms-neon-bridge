@@ -115,15 +115,18 @@ export default async function handler(req, res) {
       if (sessionRows[0].status !== 'OPEN')
         return res.json({ status: 'error', message: 'Session sudah CLOSED, tidak bisa scan lagi' });
 
-      // Cek duplikat dalam session
+      // Cek duplikat di SEMUA session (global) — mencegah scan label yang sama dua kali
       const refToCheck = tracking_reference || do_reference;
       const colToCheck = tracking_reference ? 'tracking_reference' : 'do_reference';
       const { rows: dup } = await pool.query(
-        `SELECT id FROM dispatch_log WHERE session_code = $1 AND ${colToCheck} = $2`,
-        [session_code, refToCheck]
+        `SELECT d.id, d.session_code FROM dispatch_log d WHERE d.${colToCheck} = $1`,
+        [refToCheck]
       );
       if (dup.length > 0)
-        return res.json({ status: 'duplicate', message: `'${refToCheck}' sudah discan di session ini` });
+        return res.json({
+          status: 'duplicate',
+          message: `'${refToCheck}' sudah pernah discan di session ${dup[0].session_code}`
+        });
 
       await pool.query(
         `INSERT INTO dispatch_log
