@@ -52,6 +52,17 @@ export default async function handler(req, res) {
         return res.json({ status: 'success', data: rows });
       }
 
+      if (target === 'open_sessions') {
+        // Session OPEN untuk ditampilkan sebagai card di SortingActivity
+        const { rows } = await pool.query(
+          `SELECT s.session_code, s.transporter_id, s.operator, s.status, s.total_sorted, s.created_at
+           FROM dispatch_session s
+           WHERE s.status = 'OPEN'
+           ORDER BY s.created_at DESC`
+        );
+        return res.json({ status: 'success', data: rows });
+      }
+
       if (target === 'session_log') {
         const { session_code } = req.query;
         if (!session_code) return res.json({ status: 'error', data: [] });
@@ -115,7 +126,7 @@ export default async function handler(req, res) {
       if (sessionRows[0].status !== 'OPEN')
         return res.json({ status: 'error', message: 'Session sudah CLOSED, tidak bisa scan lagi' });
 
-      // Cek duplikat di SEMUA session (global) — mencegah scan label yang sama dua kali
+      // Cek duplikat GLOBAL di semua session
       const refToCheck = tracking_reference || do_reference;
       const colToCheck = tracking_reference ? 'tracking_reference' : 'do_reference';
       const { rows: dup } = await pool.query(
@@ -125,7 +136,7 @@ export default async function handler(req, res) {
       if (dup.length > 0)
         return res.json({
           status: 'duplicate',
-          message: `'${refToCheck}' sudah pernah discan di session ${dup[0].session_code}`
+          message: `'${refToCheck}' sudah discan di session ${dup[0].session_code}`
         });
 
       await pool.query(
@@ -203,8 +214,7 @@ export default async function handler(req, res) {
 
     // ================= 6. HANDOVER — SAVE SCAN =================
     if (action === 'save_handover' && req.method === 'POST') {
-      const { session_code, tracking_reference, do_reference, security_name, status, notes } = req.body;
-      // status: CONFIRMED | NOT_FOUND | CANCELLED
+      const { session_code, tracking_reference, do_reference, security_name, courier_name, vehicle_number, status, notes } = req.body;
 
       if (!session_code || !security_name)
         return res.status(400).json({ status: 'error', message: 'session_code dan security_name wajib diisi' });
@@ -219,9 +229,11 @@ export default async function handler(req, res) {
 
       await pool.query(
         `INSERT INTO dispatch_handover
-           (session_code, tracking_reference, do_reference, status, security_name, notes, handover_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW() AT TIME ZONE 'Asia/Jakarta')`,
-        [session_code, tracking_reference || null, do_reference || null, status, security_name, notes || null]
+           (session_code, tracking_reference, do_reference, status, security_name, courier_name, vehicle_number, notes, handover_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() AT TIME ZONE 'Asia/Jakarta')
+         ON CONFLICT DO NOTHING`,
+        [session_code, tracking_reference || null, do_reference || null, status,
+         security_name, courier_name || null, vehicle_number || null, notes || null]
       );
 
       return res.json({ status: 'success', message: `Status: ${status}` });
@@ -229,7 +241,7 @@ export default async function handler(req, res) {
 
     // ================= 7. COMPLETE HANDOVER =================
     if (action === 'complete_handover' && req.method === 'POST') {
-      const { session_code } = req.body;
+      const { session_code, security_name, courier_name, vehicle_number } = req.body;
 
       // Yang masih PENDING otomatis jadi DISCREPANCY
       await pool.query(
@@ -239,8 +251,13 @@ export default async function handler(req, res) {
       );
 
       await pool.query(
-        `UPDATE dispatch_session SET status = 'HANDOVER_DONE' WHERE session_code = $1`,
-        [session_code]
+        `UPDATE dispatch_session
+         SET status = 'HANDOVER_DONE',
+             security_name  = $2,
+             courier_name   = $3,
+             vehicle_number = $4
+         WHERE session_code = $1`,
+        [session_code, security_name || null, courier_name || null, vehicle_number || null]
       );
 
       const { rows: summary } = await pool.query(
@@ -249,7 +266,14 @@ export default async function handler(req, res) {
         [session_code]
       );
 
-      return res.json({ status: 'success', summary });
+      // Full log untuk sign list
+      const { rows: logRows } = await pool.query(
+        `SELECT tracking_reference, do_reference, handover_status
+         FROM dispatch_log WHERE session_code = $1 ORDER BY scanned_at ASC`,
+        [session_code]
+      );
+
+      return res.json({ status: 'success', summary, log: logRows });
     }
 
     // ================= 8. DELETE SINGLE SCAN =================
@@ -265,6 +289,27 @@ export default async function handler(req, res) {
         );
       }
       return res.json({ status: 'success' });
+    }
+
+    // ================= 9. GET HANDOVER SIGN DATA =================
+    if (action === 'get_handover_sign' && req.method === 'GET') {
+      const { session_code } = req.query;
+      if (!session_code) return res.status(400).json({ status: 'error', message: 'session_code wajib diisi' });
+
+      const { rows: session } = await pool.query(
+        `SELECT session_code, transporter_id, operator, security_name, courier_name, vehicle_number, closed_at
+         FROM dispatch_session WHERE session_code = $1`,
+        [session_code]
+      );
+      if (session.length === 0) return res.json({ status: 'error', message: 'Session tidak ditemukan' });
+
+      const { rows: logRows } = await pool.query(
+        `SELECT tracking_reference, do_reference, handover_status
+         FROM dispatch_log WHERE session_code = $1 ORDER BY scanned_at ASC`,
+        [session_code]
+      );
+
+      return res.json({ status: 'success', session: session[0], log: logRows });
     }
 
     return res.status(404).json({ error: 'ACTION NOT FOUND' });
