@@ -73,6 +73,13 @@ export default async function handler(req, res) {
         return res.json({ status: 'success', data: rows });
       }
 
+      if (target === 'handover_list') {
+        const { rows } = await pool.query(
+          `SELECT * FROM dispatch_handover ORDER BY handover_at DESC LIMIT 1000`
+        );
+        return res.json({ status: 'success', data: rows });
+      }
+
       if (target === 'dispatch_list') {
         const { rows } = await pool.query(`SELECT * FROM dispatch_log ORDER BY scanned_at DESC LIMIT 500`);
         return res.json({ status: 'success', data: rows });
