@@ -48,7 +48,25 @@ module.exports = async (req, res) => {
         switch (target) {
 
             case 'picking_compliance':
-                queryText = `SELECT * FROM picking_compliance ORDER BY created_at DESC LIMIT 500`;
+                queryText = `
+                    SELECT
+                        id,
+                        picklist_number,
+                        product_id,
+                        location_id,
+                        description,
+                        qty_pick,
+                        keterangan,
+                        status_awal,
+                        status_akhir,
+                        inventory_reason,
+                        final_reason,
+                        created_at,
+                        updated_at
+                    FROM picking_compliance
+                    ORDER BY id DESC
+                    LIMIT 1000
+                `;
                 break;
 
             case 'picking_transactions':
