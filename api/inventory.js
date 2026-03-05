@@ -140,7 +140,8 @@ export default async function handler(req, res) {
 
           // FIX: artikel boleh kosong — simpan sebagai '-' supaya baris tetap masuk
           const artRaw = String(item.artikel ?? item.ARTICLE ?? '').trim().toUpperCase();
-          const art    = artRaw === '' ? '-' : artRaw;
+          // Artikel kosong atau '0'/'0.0' (Excel cell kosong terbaca angka) → simpan '-'
+          const art    = (artRaw === '' || artRaw === '0' || artRaw === '0.0') ? '-' : artRaw;
           const qty    = parseInt(item.qty_snap ?? item.QTY ?? 0) || 0;
 
           const key = `${loc}|${art}`;
