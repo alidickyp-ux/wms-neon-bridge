@@ -39,33 +39,70 @@ export default async function handler(req, res) {
     // ================= 2. GET DATA =================
     if (action === 'get_data' && req.method === 'GET') {
 
-      // ── PRODUCT DESC: ambil description dari master_product by product_id ──
+      // ── PRODUCT DESC ──
       if (target === 'product_desc') {
         const productId = req.query.product_id;
         if (!productId) return res.json({ status: 'error', description: null });
-
         const { rows } = await pool.query(
           `SELECT description FROM master_product WHERE product_id = $1 LIMIT 1`,
           [productId.trim().toUpperCase()]
         );
+        return res.json({ status: 'success', description: rows.length > 0 ? rows[0].description : null });
+      }
+
+      // ── LOCATION ITEMS: gabung snapshot + reconciliation untuk satu lokasi ──
+      // Dipakai oleh InventoryCountActivity Android
+      if (target === 'location_items') {
+        const loc = req.query.location_id;
+        if (!loc) return res.status(400).json({ status: 'error', message: 'location_id wajib' });
+
+        // Artikel dari snapshot
+        const { rows: snapRows } = await pool.query(
+          `SELECT s.location_id, s.artikel, s.qty_snap, p.description, 'snap' AS source
+           FROM inventory_snap s
+           LEFT JOIN master_product p ON s.artikel = p.product_id
+           WHERE UPPER(TRIM(s.location_id)) = UPPER(TRIM($1))
+           ORDER BY s.artikel ASC`,
+          [loc]
+        );
+
+        // Artikel dari reconciliation yang TIDAK ada di snapshot
+        const { rows: reconRows } = await pool.query(
+          `SELECT r.location_id, r.artikel, COALESCE(r.qty_snap, 0) AS qty_snap,
+                  p.description, r.final_status, r.qty_1st, r.qty_2nd, 'recon' AS source
+           FROM inventory_reconciliation r
+           LEFT JOIN master_product p ON r.artikel = p.product_id
+           WHERE UPPER(TRIM(r.location_id)) = UPPER(TRIM($1))
+             AND (r.artikel IS NOT NULL AND r.artikel <> '')
+             AND NOT EXISTS (
+               SELECT 1 FROM inventory_snap s
+               WHERE UPPER(TRIM(s.location_id)) = UPPER(TRIM($1))
+                 AND UPPER(TRIM(s.artikel)) = UPPER(TRIM(r.artikel))
+             )
+           ORDER BY r.artikel ASC`,
+          [loc]
+        );
+
+        const combined = [...snapRows, ...reconRows];
 
         return res.json({
-          status: 'success',
-          description: rows.length > 0 ? rows[0].description : null,
+          status:    combined.length > 0 ? 'success' : 'empty',
+          data:      combined,
+          fromSnap:  snapRows.length,
+          fromRecon: reconRows.length,
+          total:     combined.length,
         });
       }
 
-      // ── QUERY MAP untuk target lainnya ──────────────────────────────────────
+      // ── QUERY MAP ──
       const map = {
         master: `
           SELECT DISTINCT ON (unique_id) unique_id, location_id, assign
-          FROM master_lokasi
-          ORDER BY unique_id ASC
+          FROM master_lokasi ORDER BY unique_id ASC
         `,
         master_all: `
           SELECT location_id, zone, aisle, unique_id, assign
-          FROM master_lokasi
-          ORDER BY location_id ASC
+          FROM master_lokasi ORDER BY location_id ASC
         `,
         snapshot_list: `
           SELECT s.location_id, s.artikel, s.qty_snap, p.description
@@ -73,9 +110,10 @@ export default async function handler(req, res) {
           LEFT JOIN master_product p ON s.artikel = p.product_id
           ORDER BY s.location_id ASC
         `,
-        first:  `SELECT * FROM inventory_first  ORDER BY timestamp DESC`,
-        second: `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
-        recon:  `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
+        first:              `SELECT * FROM inventory_first  ORDER BY timestamp DESC`,
+        second:             `SELECT * FROM inventory_second ORDER BY timestamp DESC`,
+        recon:              `SELECT * FROM inventory_reconciliation ORDER BY location_id ASC`,
+        picking_compliance: `SELECT * FROM picking_compliance ORDER BY created_at DESC`,
       };
 
       const sql = map[target];
@@ -97,10 +135,14 @@ export default async function handler(req, res) {
 
         const summaryMap = {};
         for (const item of data) {
-          const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
-          const art = String(item.artikel || item.ARTICLE || '').trim().toUpperCase();
-          const qty = parseInt(item.qty_snap || item.QTY || 0);
-          if (!loc || !art) continue;
+          const loc = String(item.location_id ?? item.LOCATION ?? '').trim().toUpperCase();
+          if (!loc) continue;   // skip baris tanpa lokasi
+
+          // FIX: artikel boleh kosong — simpan sebagai '-' supaya baris tetap masuk
+          const artRaw = String(item.artikel ?? item.ARTICLE ?? '').trim().toUpperCase();
+          const art    = artRaw === '' ? '-' : artRaw;
+          const qty    = parseInt(item.qty_snap ?? item.QTY ?? 0) || 0;
+
           const key = `${loc}|${art}`;
           if (summaryMap[key]) summaryMap[key].qty += qty;
           else summaryMap[key] = { loc, art, qty };
@@ -108,7 +150,7 @@ export default async function handler(req, res) {
 
         const finalValues = Object.values(summaryMap);
         if (finalValues.length > 0) {
-          const values = [];
+          const values       = [];
           const placeholders = [];
           let counter = 1;
           for (const item of finalValues) {
@@ -144,19 +186,16 @@ export default async function handler(req, res) {
 
     if (action === 'delete_location' && req.method === 'POST') {
       const { unique_id } = req.body;
-      await pool.query(
-        `DELETE FROM master_lokasi WHERE location_id = $1 OR unique_id = $1`,
-        [unique_id]
-      );
+      await pool.query(`DELETE FROM master_lokasi WHERE location_id = $1 OR unique_id = $1`, [unique_id]);
       return res.json({ status: 'success' });
     }
 
     // ================= 5. SAVE COUNT & ASSIGN =================
     if (action === 'save_input' && req.method === 'POST') {
       const { location_id, artikel, qty, operator, target_table } = req.body;
-      const isFirst  = target_table?.includes('1st');
-      const table    = isFirst ? 'inventory_first'  : 'inventory_second';
-      const colQty   = isFirst ? 'qty_1st'          : 'qty_2nd';
+      const isFirst = target_table?.includes('1st');
+      const table   = isFirst ? 'inventory_first'  : 'inventory_second';
+      const colQty  = isFirst ? 'qty_1st'           : 'qty_2nd';
 
       await pool.query(
         `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
@@ -171,10 +210,7 @@ export default async function handler(req, res) {
 
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
-      await pool.query(
-        'UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2',
-        [status, unique_id]
-      );
+      await pool.query('UPDATE master_lokasi SET assign = $1 WHERE unique_id = $2', [status, unique_id]);
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.status(200).json({ status: 'success' });
     }
