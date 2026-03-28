@@ -49,7 +49,7 @@ export default async function handler(req, res) {
         return res.json({ status: 'success', description: rows.length > 0 ? rows[0].description : null });
       }
 
-      // ── LOCATION ITEMS (Untuk Android) ──
+      // ── LOCATION ITEMS (Untuk Android - Tetap Ada & Tidak Berubah) ──
       if (target === 'location_items') {
         const loc = req.query.location_id;
         if (!loc) return res.status(400).json({ status: 'error', message: 'location_id wajib' });
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
         return res.json({ status: combined.length > 0 ? 'success' : 'empty', data: combined });
       }
 
-      // ── QUERY MAP ──
+      // ── QUERY MAP (Master, All, Snap, First, Second, Recon) ──
       const map = {
         master: `SELECT DISTINCT ON (unique_id) unique_id, location_id, assign FROM master_lokasi ORDER BY unique_id ASC`,
         master_all: `SELECT location_id, zone, aisle, unique_id, assign FROM master_lokasi ORDER BY location_id ASC`,
@@ -118,17 +118,21 @@ export default async function handler(req, res) {
       } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
     }
 
-    // ================= 4. MANAJEMEN MASTER LOKASI (FIXED) =================
+    // ================= 4. MANAJEMEN MASTER LOKASI (FIXED & IMPROVED) =================
     
     // ADD / UPDATE LOCATION
     if (action === 'add_location' && req.method === 'POST') {
       const { location_id, zone, aisle, unique } = req.body;
+      const locId = String(location_id || '').trim().toUpperCase();
       const uid = unique || `${zone}-${aisle}`;
+      
+      if (!locId) return res.status(400).json({ status: 'error', message: 'ID Kosong' });
+
       await pool.query(
         `INSERT INTO master_lokasi (location_id, zone, aisle, unique_id, assign) 
          VALUES ($1, $2, $3, $4, 'closed')
          ON CONFLICT (location_id) DO UPDATE SET zone = EXCLUDED.zone, aisle = EXCLUDED.aisle, unique_id = EXCLUDED.unique_id`,
-        [location_id.trim().toUpperCase(), zone, aisle, uid]
+        [locId, zone, aisle, uid]
       );
       return res.json({ status: 'success' });
     }
@@ -136,11 +140,12 @@ export default async function handler(req, res) {
     // DELETE LOCATION
     if (action === 'delete_location' && req.method === 'POST') {
       const { unique_id } = req.body;
+      // Menghapus berdasarkan unique_id atau location_id untuk fleksibilitas
       await pool.query(`DELETE FROM master_lokasi WHERE unique_id = $1 OR location_id = $1`, [unique_id]);
       return res.json({ status: 'success' });
     }
 
-    // IMPORT MASTER DATA (EXCEL)
+    // IMPORT MASTER DATA (EXCEL - Menggunakan Upsert agar data Sinkron)
     if (action === 'upload_master' && req.method === 'POST') {
       const { data } = req.body;
       const client = await pool.connect();
@@ -150,7 +155,8 @@ export default async function handler(req, res) {
           const loc = String(item.location_id || item.LOCATION || '').trim().toUpperCase();
           const zone = String(item.zone || item.ZONE || '').trim().toUpperCase();
           const aisle = String(item.aisle || item.AISLE || '').trim();
-          const uid = `${zone}-${aisle}`;
+          const uid = item.unique_id || `${zone}-${aisle}`;
+          
           if (loc) {
             await client.query(
               `INSERT INTO master_lokasi (location_id, zone, aisle, unique_id, assign) 
