@@ -176,13 +176,25 @@ export default async function handler(req, res) {
       const { location_id, artikel, qty, operator, target_table } = req.body;
       const table = target_table?.includes('1st') ? 'inventory_first' : 'inventory_second';
       const colQty = target_table?.includes('1st') ? 'qty_1st' : 'qty_2nd';
-      await pool.query(
-        `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
-         VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT (location_id, artikel)
-         DO UPDATE SET ${colQty} = EXCLUDED.${colQty}, operator = EXCLUDED.operator, timestamp = NOW()`,
-        [location_id, artikel, qty, operator]
-      );
+      try {
+  await pool.query(
+    `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
+     VALUES ($1, $2, $3, $4, NOW())`,
+    [location_id, artikel, qty, operator]
+  );
+
+} catch (e) {
+  // 23505 = duplicate key (SKU sudah pernah diinput)
+  if (e.code === '23505') {
+    return res.json({
+      status: 'failed',
+      message: 'SKU SUDAH PERNAH DIINPUT, TIDAK BISA DIUBAH LAGI'
+    });
+  }
+
+  throw e;
+}
+
       try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
       return res.json({ status: 'success' });
     }
