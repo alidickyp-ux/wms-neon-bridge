@@ -173,31 +173,35 @@ export default async function handler(req, res) {
 
     // ================= 5. SAVE COUNT & ASSIGN =================
     if (action === 'save_input' && req.method === 'POST') {
-      const { location_id, artikel, qty, operator, target_table } = req.body;
-      const table = target_table?.includes('1st') ? 'inventory_first' : 'inventory_second';
-      const colQty = target_table?.includes('1st') ? 'qty_1st' : 'qty_2nd';
-      try {
-  await pool.query(
-    `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
-     VALUES ($1, $2, $3, $4, NOW())`,
-    [location_id, artikel, qty, operator]
-  );
+  const { location_id, artikel, qty, operator, target_table } = req.body;
 
-} catch (e) {
-  // 23505 = duplicate key (SKU sudah pernah diinput)
-  if (e.code === '23505') {
-    return res.json({
-      status: 'failed',
-      message: 'SKU SUDAH PERNAH DIINPUT, TIDAK BISA DIUBAH LAGI'
-    });
+  const table = target_table?.includes('1st') ? 'inventory_first' : 'inventory_second';
+  const colQty = target_table?.includes('1st') ? 'qty_1st' : 'qty_2nd';
+
+  try {
+    await pool.query(
+      `INSERT INTO ${table} (location_id, artikel, ${colQty}, operator, timestamp)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [location_id, artikel, qty, operator]
+    );
+  } catch (e) {
+    // 23505 = duplicate key (SKU sudah pernah diinput)
+    if (e.code === '23505') {
+      return res.json({
+        status: 'failed',
+        message: 'SKU SUDAH PERNAH DIINPUT, TIDAK BISA DIUBAH LAGI'
+      });
+    }
+    throw e;
   }
 
-  throw e;
+  try { 
+    await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); 
+  } catch (e) {}
+
+  return res.json({ status: 'success' });
 }
 
-      try { await pool.query('REFRESH MATERIALIZED VIEW inventory_reconciliation'); } catch (e) {}
-      return res.json({ status: 'success' });
-    }
 
     if (action === 'assign_location' && req.method === 'POST') {
       const { unique_id, status } = req.body;
