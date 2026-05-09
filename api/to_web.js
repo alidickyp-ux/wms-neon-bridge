@@ -129,7 +129,7 @@ module.exports = async (req, res) => {
                         GROUP BY picklist_number, product_id
                     ) pack ON pr.picklist_number = pack.picklist_number AND pr.product_id = pack.product_id
                     LEFT JOIN autoneon an ON pr.picklist_number = an.no_picking
-                    ORDER BY pr.picklist_number DESC
+                    ORDER BY pr.picklist_number DESC, pr.location_id ASC, pr.product_id ASC
                 `;
                 break;
 
