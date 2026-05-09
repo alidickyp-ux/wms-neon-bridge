@@ -171,6 +171,30 @@ export default async function handler(req, res) {
       } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
     }
 
+    //cek location//
+    if (action === 'check_location_status' && req.method === 'GET') {
+  const loc = String(req.query.location_id || '').trim().toUpperCase();
+  if (!loc) return res.json({ status: 'error', message: 'location_id kosong' });
+
+  const { rows } = await pool.query(
+    `SELECT artikel, qty_snap, qty_1st, qty_2nd, final_status
+     FROM inventory_reconciliation
+     WHERE UPPER(TRIM(location_id)) = UPPER(TRIM($1))
+     ORDER BY artikel ASC`,
+    [loc]
+  );
+
+  if (rows.length === 0) {
+    return res.json({ status: 'empty', data: [] });
+  }
+
+  return res.json({
+    status: 'success',
+    data: rows
+  });
+}
+
+
     // ================= 5. SAVE COUNT & ASSIGN =================
     if (action === 'save_input' && req.method === 'POST') {
   const { location_id, artikel, qty, operator, target_table } = req.body;
