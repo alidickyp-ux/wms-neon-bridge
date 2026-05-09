@@ -114,6 +114,7 @@ module.exports = async (req, res) => {
                     SELECT
                         pr.picklist_number,
                         pr.product_id AS sku,
+                        pr.location_id AS loc,
                         mp.description,
                         pr.qty_pick AS qty_req,
                         pr.qty_actual AS qty_picked,
